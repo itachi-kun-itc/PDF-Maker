@@ -9,11 +9,16 @@ import {
   Text,
   View,
 } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import * as ImagePicker from 'expo-image-picker';
 import DraggableFlatList, {
   RenderItemParams,
 } from 'react-native-draggable-flatlist';
+
+import {
+  scanDocumentImage,
+} from '@/utils/document-scanner';
 
 type ScanPage = {
   id: string;
@@ -21,9 +26,18 @@ type ScanPage = {
   fileName: string;
   fileSize: number;
   createdAt: number;
+  mimeType?: string;
+  width?: number;
+  height?: number;
 };
 
 type CameraMode = 'scan' | 'photo';
+
+type ScannedPageInput = {
+  uri: string;
+  width?: number;
+  height?: number;
+};
 
 const isDesktopWeb = () => {
   if (Platform.OS !== 'web') return false;
@@ -31,7 +45,93 @@ const isDesktopWeb = () => {
   return !/iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
 };
 
+const isJpegPage = (page: ScanPage) => {
+  const mimeType = page.mimeType?.toLowerCase() ?? '';
+  const fileName = page.fileName.toLowerCase();
+  return mimeType.includes('jpeg') || mimeType.includes('jpg') || /\.(jpe?g)$/i.test(fileName);
+};
+
+const getImageFormat = (page: ScanPage) => (isJpegPage(page) ? 'JPEG' : 'PNG');
+
+const getImageDataUrl = async (page: ScanPage) => {
+  const imageBase64 = await readImageBase64(page);
+  const mimeType = isJpegPage(page) ? 'image/jpeg' : 'image/png';
+  return `data:${mimeType};base64,${imageBase64}`;
+};
+
+const blobToBase64 = (blob: Blob) =>
+  new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      if (typeof reader.result !== 'string') {
+        reject(new Error('BlobをBase64に変換できませんでした。'));
+        return;
+      }
+
+      resolve(reader.result.split(',')[1] ?? '');
+    };
+    reader.onerror = () => reject(reader.error ?? new Error('Blobの読み込みに失敗しました。'));
+    reader.readAsDataURL(blob);
+  });
+
+const readImageBase64 = async (page: ScanPage) => {
+  if (page.uri.startsWith('data:')) {
+    return page.uri.split(',')[1] ?? '';
+  }
+
+  if (Platform.OS === 'web') {
+    const response = await fetch(page.uri);
+    if (!response.ok) {
+      throw new Error(`画像を読み込めませんでした: ${response.status} ${page.fileName}`);
+    }
+
+    return blobToBase64(await response.blob());
+  }
+
+  const FileSystem = await import('expo-file-system/legacy');
+
+  return FileSystem.readAsStringAsync(page.uri, {
+    encoding: 'base64',
+  });
+};
+
+const createImagePdf = async (pages: ScanPage[]) => {
+  console.log('[PDF] creating image PDF with jsPDF', { count: pages.length });
+
+  const { jsPDF } = await import('jspdf/dist/jspdf.es.min.js');
+  const firstPage = pages[0];
+  const firstWidth = firstPage.width ?? 595;
+  const firstHeight = firstPage.height ?? 842;
+  const document = new jsPDF({
+    orientation: firstWidth > firstHeight ? 'landscape' : 'portrait',
+    unit: 'pt',
+    format: [firstWidth, firstHeight],
+    compress: true,
+  });
+
+  for (const [index, page] of pages.entries()) {
+    const width = page.width ?? firstWidth;
+    const height = page.height ?? firstHeight;
+    const imageDataUrl = await getImageDataUrl(page);
+
+    if (index > 0) {
+      document.addPage([width, height], width > height ? 'landscape' : 'portrait');
+    }
+
+    document.addImage(imageDataUrl, getImageFormat(page), 0, 0, width, height);
+    console.log('[PDF] added image page', {
+      index: index + 1,
+      fileName: page.fileName,
+      width,
+      height,
+    });
+  }
+
+  return document;
+};
+
 export default function HomeScreen() {
+  const insets = useSafeAreaInsets();
   const [pages, setPages] = useState<ScanPage[]>([]);
   const [previewVisible, setPreviewVisible] = useState(false);
   const [previewImage, setPreviewImage] = useState('');
@@ -47,8 +147,126 @@ export default function HomeScreen() {
         fileName: asset.fileName ?? `scan_${Date.now()}.jpg`,
         fileSize: asset.fileSize ?? 0,
         createdAt: Date.now(),
+        mimeType: asset.mimeType,
+        width: asset.width,
+        height: asset.height,
       },
     ]);
+  };
+
+  const addScannedPages = (scannedPages: ScannedPageInput[]) => {
+    const createdAt = Date.now();
+
+    setPages((prev) => [
+      ...prev,
+      ...scannedPages.map((page, index) => ({
+        id: `${createdAt}-${index}-${Math.random().toString(36).slice(2, 8)}`,
+        uri: page.uri,
+        fileName: `document_scan_${createdAt}_${index + 1}.jpg`,
+        fileSize: 0,
+        createdAt,
+        mimeType: 'image/jpeg',
+        width: page.width,
+        height: page.height,
+      })),
+    ]);
+  };
+
+  const launchDocumentScan = async () => {
+    try {
+      setStatusMessage('');
+      setStatusMessage('書類画像を選択してください。選択後に自動で書類部分を切り出します。');
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsMultipleSelection: true,
+        quality: 1,
+      });
+
+      if (result.canceled) {
+        setStatusMessage('書類スキャンがキャンセルされました。');
+        return;
+      }
+
+      const pagesWithDimensions = await Promise.all(
+        result.assets.map(async (asset) => {
+          const scannedPage = await scanDocumentImage(asset.uri);
+
+          return {
+            uri: scannedPage.uri,
+            width: scannedPage.width,
+            height: scannedPage.height,
+          };
+        })
+      );
+
+      addScannedPages(pagesWithDimensions);
+      setStatusMessage(`${pagesWithDimensions.length}枚の書類スキャンを追加しました。`);
+    } catch (error) {
+      console.error('[Scanner] failed to scan document', error);
+      setStatusMessage('書類スキャンに失敗しました。写真から追加または通常の撮影を試してください。');
+      Alert.alert('書類スキャンエラー', error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const createAndSharePdf = async () => {
+    if (pages.length === 0) {
+      Alert.alert('PDF作成', '先に1枚以上の画像を追加してください。');
+      return;
+    }
+
+    try {
+      console.log('[PDF] start', { pageCount: pages.length, platform: Platform.OS });
+      setStatusMessage(`PDF作成中... (${pages.length}枚)`);
+
+      const pdf = await createImagePdf(pages);
+      const fileName = `scan_${new Date().toISOString().replace(/[:.]/g, '-')}.pdf`;
+
+      if (Platform.OS === 'web') {
+        const blob = pdf.output('blob');
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+
+        link.href = url;
+        link.download = fileName;
+        link.click();
+        URL.revokeObjectURL(url);
+        setStatusMessage(`PDFを作成しました: ${fileName}`);
+        console.log('[PDF] downloaded', { fileName, bytes: blob.size });
+        return;
+      }
+
+      const FileSystem = await import('expo-file-system/legacy');
+      const Sharing = await import('expo-sharing');
+      const pdfBase64 = pdf.output('datauristring').split(',')[1] ?? '';
+      const fileUri = `${FileSystem.cacheDirectory}${fileName}`;
+
+      await FileSystem.writeAsStringAsync(fileUri, pdfBase64, {
+        encoding: 'base64',
+      });
+
+      console.log('[PDF] written', { fileUri });
+
+      const canShare = await Sharing.isAvailableAsync();
+      if (!canShare) {
+        setStatusMessage(`PDFを作成しました: ${fileUri}`);
+        Alert.alert('PDF作成', `PDFを作成しました。\n${fileUri}`);
+        return;
+      }
+
+      await Sharing.shareAsync(fileUri, {
+        mimeType: 'application/pdf',
+        dialogTitle: 'PDFを共有',
+        UTI: 'com.adobe.pdf',
+      });
+
+      setStatusMessage(`PDFを作成しました: ${fileName}`);
+      console.log('[PDF] shared', { fileUri });
+    } catch (error) {
+      console.error('[PDF] failed to create or merge PDF', error);
+      setStatusMessage('PDF作成でエラーが発生しました。consoleを確認してください。');
+      Alert.alert('PDF作成エラー', error instanceof Error ? error.message : String(error));
+    }
   };
 
   const launchCamera = async (mode: CameraMode) => {
@@ -100,11 +318,6 @@ export default function HomeScreen() {
   };
 
   const startScanFlow = () => {
-    if (isDesktopWeb()) {
-      void launchLibrary();
-      return;
-    }
-
     setCameraModeVisible(true);
   };
 
@@ -164,14 +377,28 @@ export default function HomeScreen() {
   };
 
   return (
-    <View style={styles.screen}>
+    <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
       <DraggableFlatList
         data={pages}
         keyExtractor={(item) => item.id}
         renderItem={renderPage}
         onDragEnd={({ data }) => setPages(data)}
         activationDistance={4}
-        contentContainerStyle={styles.container}
+        style={styles.list}
+        containerStyle={styles.list}
+        contentContainerStyle={[
+          styles.container,
+          {
+            paddingTop: insets.top + 24,
+            paddingBottom: insets.bottom + 72,
+          },
+        ]}
+        scrollEnabled
+        nestedScrollEnabled
+        alwaysBounceVertical={pages.length > 0}
+        persistentScrollbar
+        scrollIndicatorInsets={{ top: insets.top + 16, bottom: insets.bottom + 16 }}
+        showsVerticalScrollIndicator
         ListHeaderComponent={
           <View style={styles.header}>
             <View style={styles.buttonRow}>
@@ -193,11 +420,7 @@ export default function HomeScreen() {
                   pressed && styles.buttonPressed,
                 ]}
                 onPress={() => {
-                  if (pages.length === 0) {
-                    Alert.alert('PDF作成', '先に1枚以上の写真を追加してください。');
-                    return;
-                  }
-                  setStatusMessage('PDF作成は次の段階でつなぎ込みます。');
+                  void createAndSharePdf();
                 }}
               >
                 <Text style={styles.buttonText}>PDFを作成して共有</Text>
@@ -239,7 +462,7 @@ export default function HomeScreen() {
               ]}
               onPress={async () => {
                 setCameraModeVisible(false);
-                await launchCamera('scan');
+                await launchDocumentScan();
               }}
             >
               <Text style={styles.modalButtonText}>スキャンとして撮影</Text>
@@ -298,7 +521,7 @@ export default function HomeScreen() {
           <Image source={{ uri: previewImage }} style={styles.previewImage} />
         </View>
       </Modal>
-    </View>
+    </SafeAreaView>
   );
 }
 
@@ -307,11 +530,13 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#06152A',
   },
+  list: {
+    flex: 1,
+  },
   container: {
     padding: 20,
-    paddingTop: 54,
-    paddingBottom: 40,
     backgroundColor: '#06152A',
+    flexGrow: 1,
   },
   header: {
     marginBottom: 12,
