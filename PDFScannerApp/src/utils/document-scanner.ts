@@ -1,3 +1,5 @@
+import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
+
 export type ScannedDocumentPage = {
   uri: string;
   width?: number;
@@ -33,6 +35,16 @@ export const createDocumentScanner = async (): Promise<FallbackScanner> => ({
   extractPaper: () => null,
 });
 
-export const scanDocumentImage = async (uri: string): Promise<ScannedDocumentPage> => ({
-  uri,
-});
+export const scanDocumentImage = async (uri: string): Promise<ScannedDocumentPage> => {
+  const image = await ImageManipulator.manipulate(uri).renderAsync();
+  const result = await image.saveAsync({
+    compress: 1,
+    format: SaveFormat.JPEG,
+  });
+
+  return {
+    uri: result.uri,
+    width: result.width,
+    height: result.height,
+  };
+};

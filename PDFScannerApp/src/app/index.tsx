@@ -1,10 +1,11 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Alert,
   Image,
   Modal,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -17,9 +18,7 @@ import DraggableFlatList, {
 } from 'react-native-draggable-flatlist';
 
 import { WebDocumentScanner } from '@/components/WebDocumentScanner';
-import {
-  scanDocumentImage,
-} from '@/utils/document-scanner';
+import { scanDocumentImage } from '@/utils/document-scanner';
 
 type ScanPage = {
   id: string;
@@ -32,6 +31,16 @@ type ScanPage = {
   height?: number;
 };
 
+type PdfHistoryItem = {
+  id: string;
+  fileName: string;
+  uri: string;
+  createdAt: number;
+  pageCount: number;
+  fileSize: number;
+};
+
+type ActiveTab = 'scan' | 'created';
 type CameraMode = 'scan' | 'photo';
 
 type ScannedPageInput = {
@@ -39,6 +48,9 @@ type ScannedPageInput = {
   width?: number;
   height?: number;
 };
+
+const PDF_HISTORY_STORAGE_KEY = 'pdfscanner.createdPdfs.v1';
+const CAMERA_PERMISSION_STORAGE_KEY = 'pdfscanner.cameraPermissionAsked.v1';
 
 const isDesktopWeb = () => {
   if (Platform.OS !== 'web') return false;
@@ -65,7 +77,7 @@ const blobToBase64 = (blob: Blob) =>
     const reader = new FileReader();
     reader.onloadend = () => {
       if (typeof reader.result !== 'string') {
-        reject(new Error('BlobをBase64に変換できませんでした。'));
+        reject(new Error('Blobをbase64に変換できませんでした。'));
         return;
       }
 
@@ -120,25 +132,120 @@ const createImagePdf = async (pages: ScanPage[]) => {
     }
 
     document.addImage(imageDataUrl, getImageFormat(page), 0, 0, width, height);
-    console.log('[PDF] added image page', {
-      index: index + 1,
-      fileName: page.fileName,
-      width,
-      height,
-    });
   }
 
   return document;
 };
 
+const getPdfHistoryFileUri = async () => {
+  const FileSystem = await import('expo-file-system/legacy');
+  return `${FileSystem.documentDirectory}${PDF_HISTORY_STORAGE_KEY}.json`;
+};
+
+const readPdfHistory = async (): Promise<PdfHistoryItem[]> => {
+  try {
+    if (Platform.OS === 'web') {
+      const raw = localStorage.getItem(PDF_HISTORY_STORAGE_KEY);
+      return raw ? JSON.parse(raw) : [];
+    }
+
+    const FileSystem = await import('expo-file-system/legacy');
+    const fileUri = await getPdfHistoryFileUri();
+    const fileInfo = await FileSystem.getInfoAsync(fileUri);
+    if (!fileInfo.exists) return [];
+
+    const raw = await FileSystem.readAsStringAsync(fileUri);
+    return JSON.parse(raw);
+  } catch (error) {
+    console.error('[PDF] failed to read history', error);
+    return [];
+  }
+};
+
+const writePdfHistory = async (history: PdfHistoryItem[]) => {
+  if (Platform.OS === 'web') {
+    localStorage.setItem(PDF_HISTORY_STORAGE_KEY, JSON.stringify(history));
+    return;
+  }
+
+  const FileSystem = await import('expo-file-system/legacy');
+  const fileUri = await getPdfHistoryFileUri();
+  await FileSystem.writeAsStringAsync(fileUri, JSON.stringify(history));
+};
+
+const confirmAsync = (title: string, message: string) =>
+  new Promise<boolean>((resolve) => {
+    if (Platform.OS === 'web') {
+      resolve(window.confirm(`${title}\n\n${message}`));
+      return;
+    }
+
+    Alert.alert(title, message, [
+      { text: 'いいえ', style: 'cancel', onPress: () => resolve(false) },
+      { text: 'はい', style: 'destructive', onPress: () => resolve(true) },
+    ]);
+  });
+
+const estimateDataUriBytes = (dataUri: string) => {
+  const base64 = dataUri.split(',')[1] ?? '';
+  return Math.round((base64.length * 3) / 4);
+};
+
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
+  const [activeTab, setActiveTab] = useState<ActiveTab>('scan');
   const [pages, setPages] = useState<ScanPage[]>([]);
+  const [createdPdfs, setCreatedPdfs] = useState<PdfHistoryItem[]>([]);
   const [previewVisible, setPreviewVisible] = useState(false);
   const [previewImage, setPreviewImage] = useState('');
   const [cameraModeVisible, setCameraModeVisible] = useState(false);
   const [webScannerVisible, setWebScannerVisible] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
+
+  useEffect(() => {
+    void readPdfHistory().then(setCreatedPdfs);
+  }, []);
+
+  useEffect(() => {
+    const askInitialCameraPermission = async () => {
+      try {
+        if (Platform.OS === 'web') {
+          if (localStorage.getItem(CAMERA_PERMISSION_STORAGE_KEY)) return;
+          localStorage.setItem(CAMERA_PERMISSION_STORAGE_KEY, 'true');
+
+          if (!navigator.mediaDevices?.getUserMedia) {
+            setStatusMessage('このブラウザではカメラ権限を事前確認できません。');
+            return;
+          }
+
+          const stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: { ideal: 'environment' } },
+            audio: false,
+          });
+          stream.getTracks().forEach((track) => track.stop());
+          setStatusMessage('カメラ権限を確認しました。');
+          return;
+        }
+
+        const permission = await ImagePicker.requestCameraPermissionsAsync();
+        setStatusMessage(
+          permission.granted
+            ? 'カメラ権限を確認しました。'
+            : 'カメラ権限がありません。設定から許可してください。'
+        );
+      } catch (error) {
+        console.error('[Camera] initial permission request failed', error);
+        setStatusMessage('カメラ権限の確認がキャンセルまたは拒否されました。');
+      }
+    };
+
+    void askInitialCameraPermission();
+  }, []);
+
+  const updateCreatedPdfs = async (nextHistory: PdfHistoryItem[]) => {
+    setCreatedPdfs(nextHistory);
+    await writePdfHistory(nextHistory);
+  };
 
   const addPage = (asset: ImagePicker.ImagePickerAsset) => {
     setPages((prev) => [
@@ -182,11 +289,10 @@ export default function HomeScreen() {
     }
 
     try {
-      setStatusMessage('');
-      setStatusMessage('書類画像を選択してください。選択後に自動で書類部分を切り出します。');
+      setStatusMessage('書類画像を選択してください。選択後に自動でカラー補正します。');
 
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        mediaTypes: ['images'],
         allowsMultipleSelection: true,
         quality: 1,
       });
@@ -217,69 +323,113 @@ export default function HomeScreen() {
     }
   };
 
-  const createAndSharePdf = async () => {
+  const createAndSavePdf = async () => {
     if (pages.length === 0) {
       Alert.alert('PDF作成', '先に1枚以上の画像を追加してください。');
       return;
     }
 
     try {
-      console.log('[PDF] start', { pageCount: pages.length, platform: Platform.OS });
       setStatusMessage(`PDF作成中... (${pages.length}枚)`);
 
       const pdf = await createImagePdf(pages);
+      const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const fileName = `scan_${new Date().toISOString().replace(/[:.]/g, '-')}.pdf`;
+      const pdfDataUri = pdf.output('datauristring');
+      let uri = pdfDataUri;
+      let fileSize = estimateDataUriBytes(pdfDataUri);
 
+      if (Platform.OS !== 'web') {
+        const FileSystem = await import('expo-file-system/legacy');
+        const pdfBase64 = pdfDataUri.split(',')[1] ?? '';
+        uri = `${FileSystem.documentDirectory}${fileName}`;
+        await FileSystem.writeAsStringAsync(uri, pdfBase64, {
+          encoding: 'base64',
+        });
+        fileSize = Math.round((pdfBase64.length * 3) / 4);
+      }
+
+      const historyItem: PdfHistoryItem = {
+        id,
+        fileName,
+        uri,
+        createdAt: Date.now(),
+        pageCount: pages.length,
+        fileSize,
+      };
+      const nextHistory = [historyItem, ...createdPdfs];
+
+      await updateCreatedPdfs(nextHistory);
+      setActiveTab('created');
+      setStatusMessage(`PDFを作成しました: ${fileName}`);
+    } catch (error) {
+      console.error('[PDF] failed to create PDF', error);
+      setStatusMessage('PDF作成でエラーが発生しました。');
+      Alert.alert('PDF作成エラー', error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const openCreatedPdf = async (item: PdfHistoryItem) => {
+    try {
       if (Platform.OS === 'web') {
-        const blob = pdf.output('blob');
-        const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
-
-        link.href = url;
-        link.download = fileName;
+        link.href = item.uri;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.download = item.fileName;
         link.click();
-        URL.revokeObjectURL(url);
-        setStatusMessage(`PDFを作成しました: ${fileName}`);
-        console.log('[PDF] downloaded', { fileName, bytes: blob.size });
         return;
       }
 
-      const FileSystem = await import('expo-file-system/legacy');
       const Sharing = await import('expo-sharing');
-      const pdfBase64 = pdf.output('datauristring').split(',')[1] ?? '';
-      const fileUri = `${FileSystem.cacheDirectory}${fileName}`;
-
-      await FileSystem.writeAsStringAsync(fileUri, pdfBase64, {
-        encoding: 'base64',
-      });
-
-      console.log('[PDF] written', { fileUri });
-
       const canShare = await Sharing.isAvailableAsync();
       if (!canShare) {
-        setStatusMessage(`PDFを作成しました: ${fileUri}`);
-        Alert.alert('PDF作成', `PDFを作成しました。\n${fileUri}`);
+        Alert.alert('PDF', item.uri);
         return;
       }
 
-      await Sharing.shareAsync(fileUri, {
+      await Sharing.shareAsync(item.uri, {
         mimeType: 'application/pdf',
-        dialogTitle: 'PDFを共有',
+        dialogTitle: 'PDFを開く',
         UTI: 'com.adobe.pdf',
       });
-
-      setStatusMessage(`PDFを作成しました: ${fileName}`);
-      console.log('[PDF] shared', { fileUri });
     } catch (error) {
-      console.error('[PDF] failed to create or merge PDF', error);
-      setStatusMessage('PDF作成でエラーが発生しました。consoleを確認してください。');
-      Alert.alert('PDF作成エラー', error instanceof Error ? error.message : String(error));
+      console.error('[PDF] failed to open history item', error);
+      Alert.alert('PDFを開けませんでした', error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const deleteCreatedPdf = async (item: PdfHistoryItem) => {
+    const confirmed = await confirmAsync(
+      'PDFを削除しますか？',
+      `${item.fileName} を作成済み履歴から削除します。`
+    );
+    if (!confirmed) return;
+
+    try {
+      if (Platform.OS !== 'web') {
+        const FileSystem = await import('expo-file-system/legacy');
+        await FileSystem.deleteAsync(item.uri, { idempotent: true });
+      }
+
+      const nextHistory = createdPdfs.filter((pdf) => pdf.id !== item.id);
+      await updateCreatedPdfs(nextHistory);
+      setStatusMessage(`${item.fileName} を削除しました。`);
+    } catch (error) {
+      console.error('[PDF] failed to delete history item', error);
+      Alert.alert('削除エラー', error instanceof Error ? error.message : String(error));
     }
   };
 
   const launchCamera = async (mode: CameraMode) => {
     try {
       setStatusMessage('');
+
+      if (Platform.OS === 'web' && mode === 'scan') {
+        setStatusMessage('書類スキャンを起動します。紙をガイド枠に合わせてください。');
+        setWebScannerVisible(true);
+        return;
+      }
 
       if (isDesktopWeb()) {
         setStatusMessage('PCブラウザではカメラの起動を省略して、写真の追加に切り替えます。');
@@ -294,13 +444,31 @@ export default function HomeScreen() {
       }
 
       const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ['images'],
+        cameraType: ImagePicker.CameraType.back,
         quality: mode === 'scan' ? 1 : 0.92,
         allowsEditing: mode === 'scan',
         aspect: mode === 'scan' ? [3, 4] : undefined,
       });
 
       if (!result.canceled) {
-        addPage(result.assets[0]);
+        const asset = result.assets[0];
+
+        if (mode === 'scan') {
+          setStatusMessage('カラー補正しながらスキャン画像を整えています...');
+          const scannedPage = await scanDocumentImage(asset.uri);
+          addScannedPages([
+            {
+              uri: scannedPage.uri,
+              width: scannedPage.width ?? asset.width,
+              height: scannedPage.height ?? asset.height,
+            },
+          ]);
+          setStatusMessage('カラー補正済みのスキャンを1枚追加しました。');
+          return;
+        }
+
+        addPage(asset);
       }
     } catch {
       setStatusMessage('カメラを起動できませんでした。');
@@ -312,7 +480,7 @@ export default function HomeScreen() {
       setStatusMessage('');
 
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        mediaTypes: ['images'],
         allowsMultipleSelection: true,
         quality: 1,
       });
@@ -323,10 +491,6 @@ export default function HomeScreen() {
     } catch {
       setStatusMessage('ライブラリを開けませんでした。');
     }
-  };
-
-  const startScanFlow = () => {
-    setCameraModeVisible(true);
   };
 
   const renderPage = ({
@@ -343,7 +507,7 @@ export default function HomeScreen() {
           style={styles.deleteButton}
           onPress={() => setPages((prev) => prev.filter((page) => page.id !== item.id))}
         >
-          <Text style={styles.deleteText}>×</Text>
+          <Text style={styles.deleteText}>x</Text>
         </Pressable>
 
         <View style={styles.pageNumber}>
@@ -376,79 +540,160 @@ export default function HomeScreen() {
           onLongPress={drag}
           delayLongPress={120}
           accessibilityRole="button"
-          accessibilityLabel="順序を入れ替える"
+          accessibilityLabel="順番を入れ替える"
         >
-          <Text style={styles.dragText}>⋮⋮⋮</Text>
+          <Text style={styles.dragText}>|||</Text>
         </Pressable>
       </View>
     );
   };
 
+  const renderCreatedPdf = (item: PdfHistoryItem) => (
+    <Pressable
+      key={item.id}
+      style={({ pressed }) => [
+        styles.historyCard,
+        pressed && styles.buttonPressed,
+      ]}
+      onPress={() => {
+        void openCreatedPdf(item);
+      }}
+      onLongPress={() => {
+        void deleteCreatedPdf(item);
+      }}
+      delayLongPress={450}
+    >
+      <View style={styles.pdfIcon}>
+        <Text style={styles.pdfIconText}>PDF</Text>
+      </View>
+      <View style={styles.pageInfo}>
+        <Text style={styles.fileName} numberOfLines={1}>
+          {item.fileName}
+        </Text>
+        <Text style={styles.meta}>
+          {item.pageCount}ページ / {(item.fileSize / 1024 / 1024).toFixed(2)} MB
+        </Text>
+        <Text style={styles.meta}>
+          {new Date(item.createdAt).toLocaleString()}
+        </Text>
+      </View>
+    </Pressable>
+  );
+
+  const header = (
+    <View style={[styles.topArea, { paddingTop: insets.top + 14 }]}>
+      <View style={styles.tabBar}>
+        <Pressable
+          style={[styles.tabButton, activeTab === 'scan' && styles.tabButtonActive]}
+          onPress={() => setActiveTab('scan')}
+        >
+          <Text style={[styles.tabText, activeTab === 'scan' && styles.tabTextActive]}>
+            スキャン
+          </Text>
+        </Pressable>
+        <Pressable
+          style={[styles.tabButton, activeTab === 'created' && styles.tabButtonActive]}
+          onPress={() => setActiveTab('created')}
+        >
+          <Text style={[styles.tabText, activeTab === 'created' && styles.tabTextActive]}>
+            作成済み
+          </Text>
+        </Pressable>
+      </View>
+
+      {statusMessage ? (
+        <Text style={styles.statusText}>{statusMessage}</Text>
+      ) : null}
+    </View>
+  );
+
   return (
     <SafeAreaView style={styles.screen} edges={['top', 'bottom']}>
-      <DraggableFlatList
-        data={pages}
-        keyExtractor={(item) => item.id}
-        renderItem={renderPage}
-        onDragEnd={({ data }) => setPages(data)}
-        activationDistance={4}
-        style={styles.list}
-        containerStyle={styles.list}
-        contentContainerStyle={[
-          styles.container,
-          {
-            paddingTop: insets.top + 24,
-            paddingBottom: insets.bottom + 72,
-          },
-        ]}
-        scrollEnabled
-        nestedScrollEnabled
-        alwaysBounceVertical={pages.length > 0}
-        persistentScrollbar
-        scrollIndicatorInsets={{ top: insets.top + 16, bottom: insets.bottom + 16 }}
-        showsVerticalScrollIndicator
-        ListHeaderComponent={
-          <View style={styles.header}>
-            <View style={styles.buttonRow}>
-              <Pressable
-                style={({ pressed }) => [
-                  styles.button,
-                  styles.scanButton,
-                  pressed && styles.buttonPressed,
-                ]}
-                onPress={startScanFlow}
-              >
-                <Text style={styles.buttonText}>スキャン開始</Text>
-              </Pressable>
+      {header}
 
-              <Pressable
-                style={({ pressed }) => [
-                  styles.button,
-                  styles.pdfButton,
-                  pressed && styles.buttonPressed,
-                ]}
-                onPress={() => {
-                  void createAndSharePdf();
-                }}
-              >
-                <Text style={styles.buttonText}>PDFを作成して共有</Text>
-              </Pressable>
+      {activeTab === 'scan' ? (
+        <DraggableFlatList
+          data={pages}
+          keyExtractor={(item) => item.id}
+          renderItem={renderPage}
+          onDragEnd={({ data }) => setPages(data)}
+          activationDistance={4}
+          style={styles.list}
+          containerStyle={styles.list}
+          contentContainerStyle={[
+            styles.container,
+            {
+              paddingBottom: insets.bottom + 72,
+            },
+          ]}
+          scrollEnabled
+          nestedScrollEnabled
+          alwaysBounceVertical={pages.length > 0}
+          persistentScrollbar
+          showsVerticalScrollIndicator
+          ListHeaderComponent={
+            <View style={styles.header}>
+              <View style={styles.buttonRow}>
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.button,
+                    styles.scanButton,
+                    pressed && styles.buttonPressed,
+                  ]}
+                  onPress={() => setCameraModeVisible(true)}
+                >
+                  <Text style={styles.buttonText}>スキャン開始</Text>
+                </Pressable>
+
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.button,
+                    styles.pdfButton,
+                    pressed && styles.buttonPressed,
+                  ]}
+                  onPress={() => {
+                    void createAndSavePdf();
+                  }}
+                >
+                  <Text style={styles.buttonText}>結合PDFを作成</Text>
+                </Pressable>
+              </View>
+
+              <Text style={styles.sectionTitle}>スキャン済みページ ({pages.length})</Text>
+
+              {pages.length === 0 ? (
+                <Text style={styles.emptyText}>
+                  まだページがありません。スキャン開始から写真を追加してください。
+                </Text>
+              ) : null}
             </View>
+          }
+        />
+      ) : (
+        <ScrollView
+          style={styles.list}
+          contentContainerStyle={[
+            styles.container,
+            {
+              paddingBottom: insets.bottom + 72,
+            },
+          ]}
+          showsVerticalScrollIndicator
+        >
+          <Text style={styles.sectionTitle}>作成済みPDF ({createdPdfs.length})</Text>
+          <Text style={styles.emptyText}>
+            PDFをタップすると開きます。長押しすると削除できます。
+          </Text>
 
-            {statusMessage ? (
-              <Text style={styles.statusText}>{statusMessage}</Text>
-            ) : null}
-
-            <Text style={styles.sectionTitle}>スキャン済みページ ({pages.length})</Text>
-
-            {pages.length === 0 ? (
-              <Text style={styles.emptyText}>
-                まだページがありません。スキャン開始から写真を追加してください。
-              </Text>
-            ) : null}
-          </View>
-        }
-      />
+          {createdPdfs.length === 0 ? (
+            <Text style={styles.emptyText}>
+              まだ作成済みファイルがありません。スキャンタブで結合PDFを作成してください。
+            </Text>
+          ) : (
+            createdPdfs.map(renderCreatedPdf)
+          )}
+        </ScrollView>
+      )}
 
       <Modal
         visible={cameraModeVisible}
@@ -470,7 +715,7 @@ export default function HomeScreen() {
               ]}
               onPress={async () => {
                 setCameraModeVisible(false);
-                await launchDocumentScan();
+                await launchCamera('scan');
               }}
             >
               <Text style={styles.modalButtonText}>スキャンとして撮影</Text>
@@ -488,6 +733,20 @@ export default function HomeScreen() {
               }}
             >
               <Text style={styles.modalButtonText}>通常の撮影</Text>
+            </Pressable>
+
+            <Pressable
+              style={({ pressed }) => [
+                styles.modalButton,
+                styles.modalButtonSecondary,
+                pressed && styles.buttonPressed,
+              ]}
+              onPress={async () => {
+                setCameraModeVisible(false);
+                await launchDocumentScan();
+              }}
+            >
+              <Text style={styles.modalButtonText}>写真からスキャン</Text>
             </Pressable>
 
             <Pressable
@@ -536,7 +795,7 @@ export default function HomeScreen() {
             style={styles.closePreview}
             onPress={() => setPreviewVisible(false)}
           >
-            <Text style={styles.closePreviewText}>×</Text>
+            <Text style={styles.closePreviewText}>x</Text>
           </Pressable>
 
           <Image source={{ uri: previewImage }} style={styles.previewImage} />
@@ -550,6 +809,41 @@ const styles = StyleSheet.create({
   screen: {
     flex: 1,
     backgroundColor: '#06152A',
+  },
+  topArea: {
+    paddingHorizontal: 20,
+    paddingBottom: 12,
+    backgroundColor: '#06152A',
+    borderBottomWidth: 1,
+    borderBottomColor: '#172C49',
+    flexShrink: 0,
+    zIndex: 20,
+    elevation: 20,
+  },
+  tabBar: {
+    flexDirection: 'row',
+    overflow: 'hidden',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#2A4368',
+    backgroundColor: '#0B1C31',
+  },
+  tabButton: {
+    flex: 1,
+    minHeight: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tabButtonActive: {
+    backgroundColor: '#1E6AD1',
+  },
+  tabText: {
+    color: '#AAB8D1',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  tabTextActive: {
+    color: '#FFF',
   },
   list: {
     flex: 1,
@@ -578,7 +872,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#123B73',
   },
   pdfButton: {
-    backgroundColor: '#1B2A45',
+    backgroundColor: '#22543D',
   },
   buttonPressed: {
     opacity: 0.82,
@@ -592,7 +886,7 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   statusText: {
-    marginBottom: 12,
+    marginTop: 10,
     color: '#8FB8FF',
     fontSize: 13,
   },
@@ -621,6 +915,30 @@ const styles = StyleSheet.create({
   pageCardActive: {
     opacity: 0.92,
     transform: [{ scale: 1.01 }],
+  },
+  historyCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#10243F',
+    borderWidth: 1,
+    borderColor: '#243B5F',
+    borderRadius: 12,
+    padding: 15,
+    marginBottom: 12,
+  },
+  pdfIcon: {
+    width: 58,
+    height: 74,
+    borderRadius: 8,
+    marginRight: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#8F1D2C',
+  },
+  pdfIconText: {
+    color: '#FFF',
+    fontSize: 14,
+    fontWeight: '800',
   },
   thumbnail: {
     width: 70,

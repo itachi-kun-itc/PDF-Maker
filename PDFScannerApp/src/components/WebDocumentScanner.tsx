@@ -1,12 +1,11 @@
 import type { CSSProperties } from 'react';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import {
   createDocumentScanner,
   DocumentCorners,
   DocumentPoint,
-  scanDocumentImage,
 } from '@/utils/document-scanner';
 
 type WebDocumentScannerProps = {
@@ -32,6 +31,9 @@ const A4_RATIO = A4_HEIGHT / A4_WIDTH;
 const DETECT_INTERVAL_MS = 260;
 const AUTO_CAPTURE_STABLE_MS = 1250;
 const AUTO_CAPTURE_COOLDOWN_MS = 2200;
+const DOCUMENT_ACCENT = '#FFD65A';
+const DOCUMENT_RATIO_MIN = 1.08;
+const DOCUMENT_RATIO_MAX = 1.82;
 
 const distance = (a: DocumentPoint, b: DocumentPoint) =>
   Math.hypot(a.x - b.x, a.y - b.y);
@@ -90,7 +92,7 @@ const toFullSizeCorners = (
   };
 };
 
-const isA4LikeDocument = (
+const isDocumentLike = (
   corners: DocumentCorners,
   frameWidth: number,
   frameHeight: number
@@ -100,10 +102,15 @@ const isA4LikeDocument = (
   const maxX = Math.max(...points.map((point) => point.x));
   const minY = Math.min(...points.map((point) => point.y));
   const maxY = Math.max(...points.map((point) => point.y));
-  const marginX = frameWidth * 0.015;
-  const marginY = frameHeight * 0.015;
+  const marginX = frameWidth * 0.025;
+  const marginY = frameHeight * 0.025;
 
-  if (minX < marginX || maxX > frameWidth - marginX || minY < marginY || maxY > frameHeight - marginY) {
+  if (
+    minX < -marginX ||
+    maxX > frameWidth + marginX ||
+    minY < -marginY ||
+    maxY > frameHeight + marginY
+  ) {
     return null;
   }
 
@@ -114,7 +121,7 @@ const isA4LikeDocument = (
   const averageWidth = (topWidth + bottomWidth) / 2;
   const averageHeight = (leftHeight + rightHeight) / 2;
 
-  if (averageWidth < frameWidth * 0.22 || averageHeight < frameHeight * 0.22) {
+  if (averageWidth < frameWidth * 0.16 || averageHeight < frameHeight * 0.16) {
     return null;
   }
 
@@ -125,9 +132,9 @@ const isA4LikeDocument = (
   const oppositeWidthBalance = Math.min(topWidth, bottomWidth) / Math.max(topWidth, bottomWidth);
   const oppositeHeightBalance = Math.min(leftHeight, rightHeight) / Math.max(leftHeight, rightHeight);
 
-  if (ratio < A4_RATIO * 0.82 || ratio > A4_RATIO * 1.2) return null;
-  if (areaRatio < 0.08 || areaRatio > 0.76) return null;
-  if (oppositeWidthBalance < 0.58 || oppositeHeightBalance < 0.58) return null;
+  if (ratio < DOCUMENT_RATIO_MIN || ratio > DOCUMENT_RATIO_MAX) return null;
+  if (areaRatio < 0.045 || areaRatio > 0.94) return null;
+  if (oppositeWidthBalance < 0.36 || oppositeHeightBalance < 0.36) return null;
 
   return {
     areaRatio,
@@ -165,10 +172,10 @@ const enhanceDocumentCanvas = (source: HTMLCanvasElement) => {
     const green = data[index + 1];
     const blue = data[index + 2];
     const luminance = 0.299 * red + 0.587 * green + 0.114 * blue;
-    const boosted = Math.max(0, Math.min(255, (luminance - 128) * 1.38 + 145));
-    const paperLift = boosted > 188 ? Math.min(255, boosted + 34) : boosted;
-    const inkDeepen = paperLift < 95 ? Math.max(0, paperLift - 18) : paperLift;
-    const saturation = 0.22;
+    const boosted = Math.max(0, Math.min(255, (luminance - 126) * 1.45 + 150));
+    const paperLift = boosted > 168 ? Math.min(255, boosted + 48) : boosted;
+    const inkDeepen = paperLift < 136 ? Math.max(0, paperLift - 34) : paperLift;
+    const saturation = 0.78;
 
     data[index] = Math.max(0, Math.min(255, inkDeepen + (red - luminance) * saturation));
     data[index + 1] = Math.max(0, Math.min(255, inkDeepen + (green - luminance) * saturation));
@@ -176,11 +183,39 @@ const enhanceDocumentCanvas = (source: HTMLCanvasElement) => {
   }
 
   context.putImageData(image, 0, 0);
-  context.filter = 'contrast(1.08) brightness(1.04)';
+  context.filter = 'contrast(1.22) brightness(1.08) saturate(1.08)';
   context.drawImage(canvas, 0, 0);
   context.filter = 'none';
 
   return canvas;
+};
+
+const fallbackGuideCorners = (width: number, height: number): DocumentCorners => {
+  const guideLeft = width * 0.08;
+  const guideRight = width * 0.92;
+  const guideTop = height * 0.14;
+  const guideBottom = height * 0.8;
+  const maxWidth = guideRight - guideLeft;
+  const maxHeight = guideBottom - guideTop;
+  let cropHeight = maxHeight;
+  let cropWidth = cropHeight / A4_RATIO;
+
+  if (cropWidth > maxWidth) {
+    cropWidth = maxWidth;
+    cropHeight = cropWidth * A4_RATIO;
+  }
+
+  const left = guideLeft + (maxWidth - cropWidth) / 2;
+  const top = guideTop + (maxHeight - cropHeight) / 2;
+  const right = left + cropWidth;
+  const bottom = top + cropHeight;
+
+  return {
+    topLeftCorner: { x: left, y: top },
+    topRightCorner: { x: right, y: top },
+    bottomLeftCorner: { x: left, y: bottom },
+    bottomRightCorner: { x: right, y: bottom },
+  };
 };
 
 const captureA4Document = (
@@ -208,7 +243,18 @@ const captureA4Document = (
     }
   }
 
-  return scanDocumentImage(frame.toDataURL('image/jpeg', 0.95));
+  const fallbackExtracted = scanner.extractPaper(
+    frame,
+    A4_WIDTH,
+    A4_HEIGHT,
+    fallbackGuideCorners(frame.width, frame.height)
+  );
+
+  if (fallbackExtracted) {
+    return enhanceDocumentCanvas(fallbackExtracted);
+  }
+
+  return enhanceDocumentCanvas(frame);
 };
 
 const drawOverlay = (
@@ -249,9 +295,10 @@ const drawOverlay = (
   const bottomRight = point(fullCorners.bottomRightCorner);
   const bottomLeft = point(fullCorners.bottomLeftCorner);
 
-  context.fillStyle = 'rgba(242, 194, 61, 0.2)';
-  context.strokeStyle = '#F2C23D';
+  context.fillStyle = 'rgba(255, 214, 90, 0.16)';
+  context.strokeStyle = DOCUMENT_ACCENT;
   context.lineWidth = 4;
+  context.lineJoin = 'round';
   context.beginPath();
   context.moveTo(topLeft.x, topLeft.y);
   context.lineTo(topRight.x, topRight.y);
@@ -259,6 +306,15 @@ const drawOverlay = (
   context.lineTo(bottomLeft.x, bottomLeft.y);
   context.closePath();
   context.fill();
+  context.stroke();
+
+  context.strokeStyle = 'rgba(255, 255, 255, 0.82)';
+  context.lineWidth = 1.5;
+  context.beginPath();
+  context.moveTo(topLeft.x, topLeft.y);
+  context.lineTo(bottomRight.x, bottomRight.y);
+  context.moveTo(topRight.x, topRight.y);
+  context.lineTo(bottomLeft.x, bottomLeft.y);
   context.stroke();
 };
 
@@ -277,11 +333,13 @@ export function WebDocumentScanner({
   const stableSinceRef = useRef<number | null>(null);
   const lastAutoCaptureAtRef = useRef(0);
   const autoCaptureRef = useRef(true);
+  const isCapturingRef = useRef(false);
   const streamRef = useRef<MediaStream | null>(null);
   const rafRef = useRef<number | null>(null);
   const lastDetectAtRef = useRef(0);
   const [ready, setReady] = useState(false);
   const [isCapturing, setIsCapturing] = useState(false);
+  const [captureFlash, setCaptureFlash] = useState(false);
   const [autoCaptureEnabled, setAutoCaptureEnabled] = useState(true);
   const [hint, setHint] = useState('書類を画面内に入れてください');
 
@@ -289,37 +347,32 @@ export function WebDocumentScanner({
     autoCaptureRef.current = autoCaptureEnabled;
   }, [autoCaptureEnabled]);
 
-  const capture = async (reason: 'manual' | 'auto') => {
+  const capture = useCallback(async (reason: 'manual' | 'auto') => {
     const video = videoRef.current;
     const scanner = scannerRef.current;
-    if (!video || !scanner || !video.videoWidth || !video.videoHeight || isCapturing) return;
+    if (!video || !scanner || !video.videoWidth || !video.videoHeight || isCapturingRef.current) return;
 
     try {
+      isCapturingRef.current = true;
       setIsCapturing(true);
+      setCaptureFlash(true);
+      window.setTimeout(() => setCaptureFlash(false), 170);
       setHint(reason === 'auto' ? '自動撮影しました' : 'スキャンしています');
       const result = await captureA4Document(video, scanner, detectedRef.current);
 
-      if (result instanceof HTMLCanvasElement) {
-        onCapture({
-          uri: result.toDataURL('image/jpeg', 0.95),
-          width: result.width,
-          height: result.height,
-        });
-        return;
-      }
-
       onCapture({
-        uri: result.uri,
-        width: A4_WIDTH,
-        height: A4_HEIGHT,
+        uri: result.toDataURL('image/jpeg', 0.95),
+        width: result.width,
+        height: result.height,
       });
     } catch (error) {
       console.error('[WebScanner] failed to capture scan', error);
       onError(error instanceof Error ? error.message : 'スキャン画像の作成に失敗しました。');
     } finally {
+      isCapturingRef.current = false;
       setIsCapturing(false);
     }
-  };
+  }, [onCapture, onError]);
 
   useEffect(() => {
     if (!visible) return undefined;
@@ -357,7 +410,7 @@ export function WebDocumentScanner({
 
         if (now - lastDetectAtRef.current > DETECT_INTERVAL_MS) {
           lastDetectAtRef.current = now;
-          const frameScale = Math.min(1, 720 / video.videoWidth);
+          const frameScale = Math.min(1, 920 / video.videoWidth);
           frameCanvas.width = Math.round(video.videoWidth * frameScale);
           frameCanvas.height = Math.round(video.videoHeight * frameScale);
           const frameContext = frameCanvas.getContext('2d');
@@ -378,7 +431,7 @@ export function WebDocumentScanner({
               if (contour) {
                 const corners = scanner.getCornerPoints(contour);
                 if (hasCorners(corners)) {
-                  const match = isA4LikeDocument(corners, frameCanvas.width, frameCanvas.height);
+                  const match = isDocumentLike(corners, frameCanvas.width, frameCanvas.height);
                   if (match) {
                     nextDetected = {
                       corners,
@@ -407,7 +460,7 @@ export function WebDocumentScanner({
                   autoCaptureRef.current &&
                   stableFor > AUTO_CAPTURE_STABLE_MS &&
                   now - lastAutoCaptureAtRef.current > AUTO_CAPTURE_COOLDOWN_MS &&
-                  !isCapturing;
+                  !isCapturingRef.current;
 
                 if (canAutoCapture) {
                   lastAutoCaptureAtRef.current = now;
@@ -472,7 +525,7 @@ export function WebDocumentScanner({
       active = false;
       stop();
     };
-  }, [onCancel, onError, visible]);
+  }, [capture, onCancel, onError, visible]);
 
   if (!visible || typeof document === 'undefined') return null;
 
@@ -481,6 +534,14 @@ export function WebDocumentScanner({
       <video ref={videoRef} playsInline muted autoPlay style={styles.video} />
       <canvas ref={overlayRef} style={styles.overlay} />
       <canvas ref={frameRef} style={styles.hiddenCanvas} />
+      <div style={styles.scanFrame} aria-hidden="true">
+        <span style={{ ...styles.frameCorner, ...styles.frameCornerTopLeft }} />
+        <span style={{ ...styles.frameCorner, ...styles.frameCornerTopRight }} />
+        <span style={{ ...styles.frameCorner, ...styles.frameCornerBottomLeft }} />
+        <span style={{ ...styles.frameCorner, ...styles.frameCornerBottomRight }} />
+        <span style={styles.scanLine} />
+      </div>
+      {captureFlash ? <div style={styles.flash} /> : null}
 
       <button type="button" aria-label="閉じる" onClick={onCancel} style={styles.closeButton}>
         x
@@ -550,6 +611,74 @@ const styles = {
   },
   hiddenCanvas: {
     display: 'none',
+  },
+  scanFrame: {
+    position: 'absolute',
+    left: '8%',
+    right: '8%',
+    top: '14%',
+    bottom: '20%',
+    borderRadius: 18,
+    pointerEvents: 'none',
+    boxShadow: '0 0 0 9999px rgba(0,0,0,0.22)',
+  },
+  frameCorner: {
+    position: 'absolute',
+    width: 54,
+    height: 54,
+    borderColor: DOCUMENT_ACCENT,
+  },
+  frameCornerTopLeft: {
+    top: 0,
+    left: 0,
+    borderTopWidth: 4,
+    borderLeftWidth: 4,
+    borderTopStyle: 'solid',
+    borderLeftStyle: 'solid',
+    borderTopLeftRadius: 18,
+  },
+  frameCornerTopRight: {
+    top: 0,
+    right: 0,
+    borderTopWidth: 4,
+    borderRightWidth: 4,
+    borderTopStyle: 'solid',
+    borderRightStyle: 'solid',
+    borderTopRightRadius: 18,
+  },
+  frameCornerBottomLeft: {
+    bottom: 0,
+    left: 0,
+    borderBottomWidth: 4,
+    borderLeftWidth: 4,
+    borderBottomStyle: 'solid',
+    borderLeftStyle: 'solid',
+    borderBottomLeftRadius: 18,
+  },
+  frameCornerBottomRight: {
+    right: 0,
+    bottom: 0,
+    borderRightWidth: 4,
+    borderBottomWidth: 4,
+    borderRightStyle: 'solid',
+    borderBottomStyle: 'solid',
+    borderBottomRightRadius: 18,
+  },
+  scanLine: {
+    position: 'absolute',
+    left: 22,
+    right: 22,
+    top: '50%',
+    height: 2,
+    borderRadius: 999,
+    background: 'rgba(255, 214, 90, 0.72)',
+    boxShadow: '0 0 18px rgba(255, 214, 90, 0.9)',
+  },
+  flash: {
+    position: 'absolute',
+    inset: 0,
+    background: 'rgba(255,255,255,0.72)',
+    pointerEvents: 'none',
   },
   closeButton: {
     position: 'absolute',
