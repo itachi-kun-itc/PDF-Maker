@@ -850,7 +850,7 @@ export function WebDocumentScanner({
       {captureFlash ? <div style={styles.flash} /> : null}
 
       <button type="button" aria-label="閉じる" onClick={onCancel} style={styles.closeButton}>
-        x
+        ✕
       </button>
 
       <div style={styles.topPill}>

@@ -32,6 +32,8 @@
     },
     "plugins": [
       "expo-router",
+      "@config-plugins/react-native-blob-util",
+      "@config-plugins/react-native-pdf",
       [
         "expo-image-picker",
         {
@@ -47,6 +49,12 @@
             "image": "./assets/images/splash-icon.png",
             "imageWidth": 76
           }
+        }
+      ],
+      [
+        "react-native-document-scanner-plugin",
+        {
+          "cameraPermission": "このアプリは書類を高精度にスキャンするためにカメラへアクセスします。"
         }
       ]
     ],

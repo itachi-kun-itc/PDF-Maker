@@ -13,16 +13,18 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import DraggableFlatList, {
   RenderItemParams,
 } from 'react-native-draggable-flatlist';
 
+import { PdfPreview } from '@/components/PdfPreview';
 import { WebDocumentScanner } from '@/components/WebDocumentScanner';
-import { scanDocumentImage } from '@/utils/document-scanner';
 
 type ScanPage = {
   id: string;
+  sourceType: 'image' | 'pdf';
   uri: string;
   fileName: string;
   fileSize: number;
@@ -30,6 +32,8 @@ type ScanPage = {
   mimeType?: string;
   width?: number;
   height?: number;
+  pageCount?: number;
+  base64?: string;
 };
 
 type PdfHistoryItem = {
@@ -54,7 +58,7 @@ type ScannedPageInput = {
 type PendingPdf = {
   id: string;
   pdfDataUri: string;
-  previewDataUri: string;
+  previewDataUri?: string;
   createdAt: number;
   pageCount: number;
   fileSize: number;
@@ -65,6 +69,8 @@ const PDF_HISTORY_WEB_DB_NAME = 'pdfscanner.history.db';
 const PDF_HISTORY_WEB_STORE_NAME = 'pdfHistory';
 const PDF_HISTORY_WEB_RECORD_KEY = 'items';
 const CAMERA_PERMISSION_STORAGE_KEY = 'pdfscanner.cameraPermissionAsked.v1';
+const A4_PORTRAIT_WIDTH = 595.28;
+const A4_PORTRAIT_HEIGHT = 841.89;
 
 const isDesktopWeb = () => {
   if (Platform.OS !== 'web') return false;
@@ -78,7 +84,25 @@ const isJpegPage = (page: ScanPage) => {
   return mimeType.includes('jpeg') || mimeType.includes('jpg') || /\.(jpe?g)$/i.test(fileName);
 };
 
-const getImageFormat = (page: ScanPage) => (isJpegPage(page) ? 'JPEG' : 'PNG');
+const isPdfPage = (page: ScanPage) => {
+  const mimeType = page.mimeType?.toLowerCase() ?? '';
+  return page.sourceType === 'pdf' || mimeType.includes('pdf') || /\.pdf$/i.test(page.fileName);
+};
+
+const isDocumentPickerPdfAsset = (asset: DocumentPicker.DocumentPickerAsset) => {
+  const mimeType = asset.mimeType?.toLowerCase() ?? '';
+  return mimeType.includes('pdf') || /\.pdf$/i.test(asset.name) || /\.pdf$/i.test(asset.uri);
+};
+
+const isDocumentPickerImageAsset = (asset: DocumentPicker.DocumentPickerAsset) => {
+  const mimeType = asset.mimeType?.toLowerCase() ?? '';
+  return (
+    mimeType.includes('jpeg') ||
+    mimeType.includes('jpg') ||
+    mimeType.includes('png') ||
+    /\.(jpe?g|png)$/i.test(asset.name)
+  );
+};
 
 const getImageDataUrl = async (page: ScanPage) => {
   const imageBase64 = await readImageBase64(page);
@@ -101,15 +125,15 @@ const blobToBase64 = (blob: Blob) =>
     reader.readAsDataURL(blob);
   });
 
-const readImageBase64 = async (page: ScanPage) => {
-  if (page.uri.startsWith('data:')) {
-    return page.uri.split(',')[1] ?? '';
+const readFileBase64 = async (uri: string, fileName: string) => {
+  if (uri.startsWith('data:')) {
+    return uri.split(',')[1] ?? '';
   }
 
   if (Platform.OS === 'web') {
-    const response = await fetch(page.uri);
+    const response = await fetch(uri);
     if (!response.ok) {
-      throw new Error(`画像を読み込めませんでした: ${response.status} ${page.fileName}`);
+      throw new Error(`ファイルを読み込めませんでした: ${response.status} ${fileName}`);
     }
 
     return blobToBase64(await response.blob());
@@ -117,38 +141,113 @@ const readImageBase64 = async (page: ScanPage) => {
 
   const FileSystem = await import('expo-file-system/legacy');
 
-  return FileSystem.readAsStringAsync(page.uri, {
+  return FileSystem.readAsStringAsync(uri, {
     encoding: 'base64',
   });
 };
 
-const createImagePdf = async (pages: ScanPage[]) => {
-  console.log('[PDF] creating image PDF with jsPDF', { count: pages.length });
+const readImageBase64 = async (page: ScanPage) =>
+  page.base64 ?? readFileBase64(page.uri, page.fileName);
 
+const readPdfBase64 = async (page: ScanPage) =>
+  page.base64 ?? readFileBase64(page.uri, page.fileName);
+
+const getPageCount = (page: ScanPage) => (isPdfPage(page) ? page.pageCount ?? 1 : 1);
+
+const getContainedImageFrame = (
+  imageWidth: number,
+  imageHeight: number,
+  pageWidth: number,
+  pageHeight: number,
+) => {
+  const safeImageWidth = Math.max(1, imageWidth);
+  const safeImageHeight = Math.max(1, imageHeight);
+  const scale = Math.min(pageWidth / safeImageWidth, pageHeight / safeImageHeight);
+  const width = safeImageWidth * scale;
+  const height = safeImageHeight * scale;
+
+  return {
+    x: (pageWidth - width) / 2,
+    y: (pageHeight - height) / 2,
+    width,
+    height,
+  };
+};
+
+const createSingleImagePdfDataUri = async (page: ScanPage) => {
   const { jsPDF } = await import('jspdf/dist/jspdf.es.min.js');
-  const firstPage = pages[0];
-  const firstWidth = firstPage.width ?? 595;
-  const firstHeight = firstPage.height ?? 842;
-  const document = new jsPDF({
-    orientation: firstWidth > firstHeight ? 'landscape' : 'portrait',
+  const imageDataUrl = await getImageDataUrl(page);
+  const probeDocument = new jsPDF({
     unit: 'pt',
-    format: [firstWidth, firstHeight],
+    format: 'a4',
+  });
+  const imageProperties = probeDocument.getImageProperties(imageDataUrl);
+  const imageWidth = page.width ?? imageProperties.width;
+  const imageHeight = page.height ?? imageProperties.height;
+  const isLandscape = imageWidth > imageHeight;
+  const pageWidth = isLandscape ? A4_PORTRAIT_HEIGHT : A4_PORTRAIT_WIDTH;
+  const pageHeight = isLandscape ? A4_PORTRAIT_WIDTH : A4_PORTRAIT_HEIGHT;
+  const imageFrame = getContainedImageFrame(imageWidth, imageHeight, pageWidth, pageHeight);
+  const document = new jsPDF({
+    orientation: isLandscape ? 'landscape' : 'portrait',
+    unit: 'pt',
+    format: [pageWidth, pageHeight],
     compress: true,
   });
 
-  for (const [index, page] of pages.entries()) {
-    const width = page.width ?? firstWidth;
-    const height = page.height ?? firstHeight;
-    const imageDataUrl = await getImageDataUrl(page);
+  document.addImage(
+    imageDataUrl,
+    isJpegPage(page) ? 'JPEG' : 'PNG',
+    imageFrame.x,
+    imageFrame.y,
+    imageFrame.width,
+    imageFrame.height,
+  );
 
-    if (index > 0) {
-      document.addPage([width, height], width > height ? 'landscape' : 'portrait');
+  return {
+    pdfDataUri: document.output('datauristring'),
+    previewDataUri: imageDataUrl,
+  };
+};
+
+const createMergedPdf = async (pages: ScanPage[]) => {
+  console.log('[PDF] creating merged PDF with pdf-lib', { count: pages.length });
+
+  const { PDFDocument } = await import('pdf-lib/dist/pdf-lib.esm.min.js');
+  const document = await PDFDocument.create();
+  let previewDataUri: string | undefined;
+
+  for (const page of pages) {
+    if (isPdfPage(page)) {
+      const sourcePdf = await PDFDocument.load(await readPdfBase64(page), {
+        ignoreEncryption: true,
+      });
+      const copiedPages = await document.copyPages(sourcePdf, sourcePdf.getPageIndices());
+      copiedPages.forEach((copiedPage) => {
+        document.addPage(copiedPage);
+      });
+      continue;
     }
 
-    document.addImage(imageDataUrl, getImageFormat(page), 0, 0, width, height);
+    const imagePdf = await createSingleImagePdfDataUri(page);
+    const sourcePdf = await PDFDocument.load(imagePdf.pdfDataUri, {
+      ignoreEncryption: true,
+    });
+    const [copiedPage] = await document.copyPages(sourcePdf, [0]);
+    document.addPage(copiedPage);
+
+    previewDataUri ??= imagePdf.previewDataUri;
   }
 
-  return document;
+  const pdfDataUri = await document.saveAsBase64({
+    dataUri: true,
+  });
+
+  return {
+    pdfDataUri,
+    previewDataUri,
+    pageCount: document.getPageCount(),
+  };
 };
 
 const getPdfHistoryFileUri = async () => {
@@ -366,11 +465,12 @@ export default function HomeScreen() {
     await writePdfHistory(nextHistory);
   };
 
-  const addPage = (asset: ImagePicker.ImagePickerAsset) => {
+  const addImagePage = (asset: ImagePicker.ImagePickerAsset) => {
     setPages((prev) => [
       ...prev,
       {
         id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        sourceType: 'image',
         uri: asset.uri,
         fileName: asset.fileName ?? `scan_${Date.now()}.jpg`,
         fileSize: asset.fileSize ?? 0,
@@ -382,6 +482,41 @@ export default function HomeScreen() {
     ]);
   };
 
+  const addDocumentImagePage = (asset: DocumentPicker.DocumentPickerAsset, base64?: string) => {
+    const mimeType = asset.mimeType ?? (base64?.startsWith('/9j') ? 'image/jpeg' : 'image/png');
+
+    setPages((prev) => [
+      ...prev,
+      {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        sourceType: 'image',
+        uri: base64 ? `data:${mimeType};base64,${base64}` : asset.uri,
+        fileName: asset.name,
+        fileSize: asset.size ?? (base64 ? Math.round((base64.length * 3) / 4) : 0),
+        createdAt: Date.now(),
+        mimeType,
+        base64,
+      },
+    ]);
+  };
+
+  const addPdfPage = (asset: DocumentPicker.DocumentPickerAsset, base64: string, pageCount: number) => {
+    setPages((prev) => [
+      ...prev,
+      {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        sourceType: 'pdf',
+        uri: `data:application/pdf;base64,${base64}`,
+        fileName: asset.name,
+        fileSize: asset.size ?? Math.round((base64.length * 3) / 4),
+        createdAt: Date.now(),
+        mimeType: asset.mimeType ?? 'application/pdf',
+        pageCount,
+        base64,
+      },
+    ]);
+  };
+
   const addScannedPages = (scannedPages: ScannedPageInput[]) => {
     const createdAt = Date.now();
 
@@ -389,6 +524,7 @@ export default function HomeScreen() {
       ...prev,
       ...scannedPages.map((page, index) => ({
         id: `${createdAt}-${index}-${Math.random().toString(36).slice(2, 8)}`,
+        sourceType: 'image' as const,
         uri: page.uri,
         fileName: `document_scan_${createdAt}_${index + 1}.jpg`,
         fileSize: 0,
@@ -404,34 +540,33 @@ export default function HomeScreen() {
     if (isCreatingPdf || isSavingPdf) return;
 
     if (pages.length === 0) {
-      Alert.alert('PDF作成', '先に1枚以上の画像を追加してください。');
+      Alert.alert('PDF作成', '先に1つ以上の画像またはPDFを追加してください。');
       return;
     }
 
     try {
       setIsCreatingPdf(true);
-      setStatusMessage(`PDF結合中... (${pages.length}枚)`);
+      setStatusMessage(`PDF結合中... (${pages.length}ファイル)`);
 
-      const pdf = await createImagePdf(pages);
+      const mergedPdf = await createMergedPdf(pages);
       const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const pdfDataUri = pdf.output('datauristring');
-      const previewDataUri = await getImageDataUrl(pages[0]);
 
       setPendingPdf({
         id,
-        pdfDataUri,
-        previewDataUri,
+        pdfDataUri: mergedPdf.pdfDataUri,
+        previewDataUri: mergedPdf.previewDataUri,
         createdAt: Date.now(),
-        pageCount: pages.length,
-        fileSize: estimateDataUriBytes(pdfDataUri),
+        pageCount: mergedPdf.pageCount,
+        fileSize: estimateDataUriBytes(mergedPdf.pdfDataUri),
       });
       setPdfFileNameInput(getDefaultPdfName());
       setFileNameModalVisible(true);
       setStatusMessage('PDFを結合しました。ファイル名を入力してください。');
     } catch (error) {
       console.error('[PDF] failed to create PDF', error);
-      setStatusMessage('PDF作成でエラーが発生しました。');
-      Alert.alert('PDF作成エラー', error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      setStatusMessage(`PDF作成でエラーが発生しました: ${message}`);
+      Alert.alert('PDF作成エラー', message);
     } finally {
       setIsCreatingPdf(false);
     }
@@ -454,15 +589,19 @@ export default function HomeScreen() {
       if (Platform.OS !== 'web') {
         const FileSystem = await import('expo-file-system/legacy');
         const pdfBase64 = pdfToSave.pdfDataUri.split(',')[1] ?? '';
-        const previewBase64 = pdfToSave.previewDataUri.split(',')[1] ?? '';
         uri = `${FileSystem.documentDirectory}${fileName}`;
-        previewUri = `${FileSystem.documentDirectory}${pdfToSave.id}_preview.jpg`;
         await FileSystem.writeAsStringAsync(uri, pdfBase64, {
           encoding: 'base64',
         });
-        await FileSystem.writeAsStringAsync(previewUri, previewBase64, {
-          encoding: 'base64',
-        });
+
+        if (pdfToSave.previewDataUri) {
+          const previewBase64 = pdfToSave.previewDataUri.split(',')[1] ?? '';
+          previewUri = `${FileSystem.documentDirectory}${pdfToSave.id}_preview.jpg`;
+          await FileSystem.writeAsStringAsync(previewUri, previewBase64, {
+            encoding: 'base64',
+          });
+        }
+
         fileSize = Math.round((pdfBase64.length * 3) / 4);
       }
 
@@ -578,6 +717,36 @@ export default function HomeScreen() {
     }
   };
 
+  const launchNativeDocumentScanner = async () => {
+    const {
+      default: DocumentScanner,
+      ResponseType,
+      ScanDocumentResponseStatus,
+    } = await import('react-native-document-scanner-plugin');
+    const result = await DocumentScanner.scanDocument({
+      croppedImageQuality: 100,
+      responseType: ResponseType.Base64,
+    });
+
+    if (result.status === ScanDocumentResponseStatus.Cancel) {
+      setStatusMessage('書類スキャンをキャンセルしました。');
+      return;
+    }
+
+    const scannedImages = result.scannedImages ?? [];
+    if (result.status !== ScanDocumentResponseStatus.Success || scannedImages.length === 0) {
+      setStatusMessage('書類スキャンで画像を取得できませんでした。');
+      return;
+    }
+
+    addScannedPages(
+      scannedImages.map((imageBase64) => ({
+        uri: `data:image/jpeg;base64,${imageBase64}`,
+      }))
+    );
+    setStatusMessage(`ネイティブ書類スキャンで${scannedImages.length}ページ追加しました。`);
+  };
+
   const launchCamera = async (mode: CameraMode) => {
     try {
       setStatusMessage('');
@@ -585,6 +754,11 @@ export default function HomeScreen() {
       if (Platform.OS === 'web' && mode === 'scan') {
         setStatusMessage('書類スキャンを起動します。紙をガイド枠に合わせてください。');
         setWebScannerVisible(true);
+        return;
+      }
+
+      if (mode === 'scan') {
+        await launchNativeDocumentScanner();
         return;
       }
 
@@ -603,29 +777,13 @@ export default function HomeScreen() {
       const result = await ImagePicker.launchCameraAsync({
         mediaTypes: ['images'],
         cameraType: ImagePicker.CameraType.back,
-        quality: mode === 'scan' ? 1 : 0.92,
-        allowsEditing: mode === 'scan',
-        aspect: mode === 'scan' ? [3, 4] : undefined,
+        quality: 0.92,
+        allowsEditing: false,
       });
 
       if (!result.canceled) {
         const asset = result.assets[0];
-
-        if (mode === 'scan') {
-          setStatusMessage('カラー補正しながらスキャン画像を整えています...');
-          const scannedPage = await scanDocumentImage(asset.uri);
-          addScannedPages([
-            {
-              uri: scannedPage.uri,
-              width: scannedPage.width ?? asset.width,
-              height: scannedPage.height ?? asset.height,
-            },
-          ]);
-          setStatusMessage('カラー補正済みのスキャンを1枚追加しました。');
-          return;
-        }
-
-        addPage(asset);
+        addImagePage(asset);
       }
     } catch {
       setStatusMessage('カメラを起動できませんでした。');
@@ -643,10 +801,74 @@ export default function HomeScreen() {
       });
 
       if (!result.canceled) {
-        result.assets.forEach(addPage);
+        result.assets.forEach(addImagePage);
       }
     } catch {
       setStatusMessage('ライブラリを開けませんでした。');
+    }
+  };
+
+  const launchFilePicker = async () => {
+    try {
+      setStatusMessage('');
+
+      const result = await DocumentPicker.getDocumentAsync({
+        type: '*/*',
+        multiple: true,
+        copyToCacheDirectory: true,
+        base64: false,
+      });
+
+      if (result.canceled) return;
+
+      let addedFiles = 0;
+      let skippedFiles = 0;
+
+      for (const asset of result.assets) {
+        try {
+          const fileBase64 = await readFileBase64(asset.uri, asset.name);
+          const isPdfAsset = isDocumentPickerPdfAsset(asset) || fileBase64.startsWith('JVBERi0');
+          const isImageAsset =
+            isDocumentPickerImageAsset(asset) ||
+            fileBase64.startsWith('/9j') ||
+            fileBase64.startsWith('iVBOR');
+
+          if (isPdfAsset) {
+            const { PDFDocument } = await import('pdf-lib/dist/pdf-lib.esm.min.js');
+            const sourcePdf = await PDFDocument.load(fileBase64, {
+              ignoreEncryption: true,
+            });
+            addPdfPage(asset, fileBase64, sourcePdf.getPageCount());
+            addedFiles += 1;
+            continue;
+          }
+
+          if (isImageAsset) {
+            addDocumentImagePage(asset, fileBase64);
+            addedFiles += 1;
+            continue;
+          }
+        } catch (error) {
+          console.warn('[DocumentPicker] skipped file', asset.name, error);
+        }
+
+        skippedFiles += 1;
+      }
+
+      if (addedFiles > 0) {
+        setStatusMessage(
+          skippedFiles > 0
+            ? `${addedFiles}ファイルを追加しました。${skippedFiles}ファイルは未対応形式です。`
+            : `${addedFiles}ファイルを追加しました。`
+        );
+        return;
+      }
+
+      setStatusMessage('追加できるPDF/JPEG/PNGファイルがありませんでした。');
+    } catch (error) {
+      console.error('[DocumentPicker] failed to add files', error);
+      setStatusMessage('ファイルを追加できませんでした。');
+      Alert.alert('ファイル追加エラー', error instanceof Error ? error.message : String(error));
     }
   };
 
@@ -657,6 +879,7 @@ export default function HomeScreen() {
     isActive,
   }: RenderItemParams<ScanPage>) => {
     const index = getIndex() ?? 0;
+    const pageCount = getPageCount(item);
 
     return (
       <View style={[styles.pageCard, isActive && styles.pageCardActive]}>
@@ -672,20 +895,29 @@ export default function HomeScreen() {
           <Text style={styles.pageNumberText}>{index + 1}</Text>
         </View>
 
-        <Pressable
-          disabled={isActive || isReorderingPages}
-          onPress={() => {
-            setPreviewImage(item.uri);
-            setPreviewVisible(true);
-          }}
-        >
-          <Image source={{ uri: item.uri }} style={styles.thumbnail} />
-        </Pressable>
+        {isPdfPage(item) ? (
+          <PdfPreview uri={item.uri} variant="page" />
+        ) : (
+          <Pressable
+            disabled={isActive || isReorderingPages}
+            onPress={() => {
+              setPreviewImage(item.uri);
+              setPreviewVisible(true);
+            }}
+          >
+            <Image source={{ uri: item.uri }} style={styles.thumbnail} />
+          </Pressable>
+        )}
 
         <View style={styles.pageInfo}>
           <Text style={styles.fileName} numberOfLines={1}>
             {item.fileName}
           </Text>
+          {isPdfPage(item) ? (
+            <Text style={styles.meta}>
+              {item.pageCount ? `${pageCount}ページのPDF` : 'PDFファイル'}
+            </Text>
+          ) : null}
           <Text style={styles.meta}>
             {(item.fileSize / 1024 / 1024).toFixed(2)} MB
           </Text>
@@ -725,9 +957,7 @@ export default function HomeScreen() {
       {item.previewUri ? (
         <Image source={{ uri: item.previewUri }} style={styles.pdfPreview} />
       ) : (
-        <View style={styles.pdfIcon}>
-          <Text style={styles.pdfIconText}>PDF</Text>
-        </View>
+        <PdfPreview uri={item.uri} variant="history" />
       )}
       <View style={styles.pageInfo}>
         <Text style={styles.fileName} numberOfLines={1}>
@@ -840,11 +1070,11 @@ export default function HomeScreen() {
                 </Pressable>
               </View>
 
-              <Text style={styles.sectionTitle}>スキャン済みページ ({pages.length})</Text>
+              <Text style={styles.sectionTitle}>追加済みファイル ({pages.length})</Text>
 
               {pages.length === 0 ? (
                 <Text style={styles.emptyText}>
-                  まだページがありません。スキャン開始から写真を追加してください。
+                  まだページがありません。スキャン開始から写真またはPDFを追加してください。
                 </Text>
               ) : null}
             </View>
@@ -924,7 +1154,7 @@ export default function HomeScreen() {
               ]}
               onPress={async () => {
                 setCameraModeVisible(false);
-                await launchLibrary();
+                await launchFilePicker();
               }}
             >
               <Text style={styles.modalButtonText}>写真／ファイルから追加</Text>
@@ -1016,7 +1246,7 @@ export default function HomeScreen() {
             style={styles.closePreview}
             onPress={() => setPreviewVisible(false)}
           >
-            <Text style={styles.closePreviewText}>x</Text>
+            <Text style={styles.closePreviewText}>✕</Text>
           </Pressable>
 
           <Image source={{ uri: previewImage }} style={styles.previewImage} />
@@ -1175,6 +1405,17 @@ const styles = StyleSheet.create({
     color: '#FFF',
     fontSize: 14,
     fontWeight: '800',
+  },
+  pdfPageIcon: {
+    width: 70,
+    height: 90,
+    borderRadius: 8,
+    marginRight: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#8F1D2C',
+    borderWidth: 1,
+    borderColor: '#C55262',
   },
   pdfPreview: {
     width: 58,
