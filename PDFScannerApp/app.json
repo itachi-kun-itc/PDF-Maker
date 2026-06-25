@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "PDFScannerApp",
+    "name": "PDFスキャン-結合",
     "slug": "PDFScannerApp",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -8,14 +8,13 @@
     "scheme": "pdfscannerapp",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/expo.icon"
+      "icon": "./assets/images/icon.png"
     },
     "android": {
+      "icon": "./assets/images/icon.png",
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/images/android-icon-foreground.png",
-        "backgroundImage": "./assets/images/android-icon-background.png",
-        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+        "backgroundColor": "#006CFF",
+        "foregroundImage": "./assets/images/icon.png"
       },
       "predictiveBackGestureEnabled": false,
       "permissions": [
@@ -27,8 +26,8 @@
       "display": "standalone",
       "themeColor": "#06152A",
       "backgroundColor": "#06152A",
-      "name": "PDF Scanner",
-      "shortName": "PDF Scanner",
+      "name": "PDFスキャン-結合",
+      "shortName": "PDFスキャン",
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [

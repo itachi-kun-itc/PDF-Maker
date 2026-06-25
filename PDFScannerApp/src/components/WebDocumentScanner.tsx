@@ -21,19 +21,83 @@ type DetectedDocument = {
   frameHeight: number;
   areaRatio: number;
   center: DocumentPoint;
+  score: number;
 };
 
 type ScannerInstance = Awaited<ReturnType<typeof createDocumentScanner>>;
+type OpenCvMatLike = {
+  rows?: number;
+  data32S?: Int32Array;
+  delete: () => void;
+};
+type OpenCvApi = {
+  Mat: new () => OpenCvMatLike;
+  MatVector: new () => {
+    size: () => number;
+    get: (index: number) => OpenCvMatLike;
+    delete: () => void;
+  };
+  Size: new (width: number, height: number) => unknown;
+  Point: new (x: number, y: number) => unknown;
+  imread: (source: HTMLCanvasElement) => OpenCvMatLike;
+  cvtColor: (src: OpenCvMatLike, dst: OpenCvMatLike, code: number) => void;
+  GaussianBlur: (
+    src: OpenCvMatLike,
+    dst: OpenCvMatLike,
+    size: unknown,
+    sigmaX: number,
+    sigmaY?: number
+  ) => void;
+  Canny: (src: OpenCvMatLike, dst: OpenCvMatLike, threshold1: number, threshold2: number) => void;
+  morphologyEx: (
+    src: OpenCvMatLike,
+    dst: OpenCvMatLike,
+    op: number,
+    kernel: OpenCvMatLike
+  ) => void;
+  getStructuringElement: (shape: number, size: unknown) => OpenCvMatLike;
+  findContours: (
+    image: OpenCvMatLike,
+    contours: InstanceType<OpenCvApi['MatVector']>,
+    hierarchy: OpenCvMatLike,
+    mode: number,
+    method: number
+  ) => void;
+  contourArea: (contour: OpenCvMatLike) => number;
+  arcLength: (curve: OpenCvMatLike, closed: boolean) => number;
+  approxPolyDP: (
+    curve: OpenCvMatLike,
+    approxCurve: OpenCvMatLike,
+    epsilon: number,
+    closed: boolean
+  ) => void;
+  COLOR_RGBA2GRAY: number;
+  MORPH_CLOSE: number;
+  MORPH_RECT: number;
+  RETR_EXTERNAL: number;
+  CHAIN_APPROX_SIMPLE: number;
+};
 
 const A4_WIDTH = 1240;
 const A4_HEIGHT = 1754;
 const A4_RATIO = A4_HEIGHT / A4_WIDTH;
-const DETECT_INTERVAL_MS = 260;
+const OUTPUT_LONG_SIDE = A4_HEIGHT;
+const OUTPUT_MIN_SHORT_SIDE = 640;
+const DETECT_INTERVAL_MS = 160;
+const DETECTION_MAX_FRAME_WIDTH = 1120;
 const AUTO_CAPTURE_STABLE_MS = 950;
 const AUTO_CAPTURE_COOLDOWN_MS = 2200;
 const DOCUMENT_ACCENT = '#2F86FF';
-const DOCUMENT_RATIO_MIN = 1.16;
-const DOCUMENT_RATIO_MAX = 1.7;
+const GUIDE_BOUNDS = {
+  left: 0.06,
+  right: 0.94,
+  top: 0.12,
+  bottom: 0.84,
+};
+const SHAPE_RATIO_MAX = 3.2;
+const CANDIDATE_AREA_WEIGHT = 1.9;
+const CANDIDATE_GUIDE_WEIGHT = 1.25;
+const CANDIDATE_A4_WEIGHT = 0.32;
 
 const distance = (a: DocumentPoint, b: DocumentPoint) =>
   Math.hypot(a.x - b.x, a.y - b.y);
@@ -70,6 +134,37 @@ const cornerList = (corners: DocumentCorners) => [
   corners.bottomLeftCorner,
 ];
 
+const orderCorners = (points: DocumentPoint[]): DocumentCorners | null => {
+  if (points.length !== 4) return null;
+
+  const sortedByY = [...points].sort((a, b) => a.y - b.y);
+  const top = sortedByY.slice(0, 2).sort((a, b) => a.x - b.x);
+  const bottom = sortedByY.slice(2).sort((a, b) => a.x - b.x);
+
+  return {
+    topLeftCorner: top[0],
+    topRightCorner: top[1],
+    bottomLeftCorner: bottom[0],
+    bottomRightCorner: bottom[1],
+  };
+};
+
+const lerpPoint = (from: DocumentPoint, to: DocumentPoint, amount: number) => ({
+  x: from.x + (to.x - from.x) * amount,
+  y: from.y + (to.y - from.y) * amount,
+});
+
+const smoothCorners = (
+  previous: DocumentCorners,
+  current: DocumentCorners,
+  amount: number
+): DocumentCorners => ({
+  topLeftCorner: lerpPoint(previous.topLeftCorner, current.topLeftCorner, amount),
+  topRightCorner: lerpPoint(previous.topRightCorner, current.topRightCorner, amount),
+  bottomLeftCorner: lerpPoint(previous.bottomLeftCorner, current.bottomLeftCorner, amount),
+  bottomRightCorner: lerpPoint(previous.bottomRightCorner, current.bottomRightCorner, amount),
+});
+
 const toFullSizeCorners = (
   corners: DocumentCorners,
   sourceWidth: number,
@@ -92,10 +187,86 @@ const toFullSizeCorners = (
   };
 };
 
-const isDocumentLike = (
+const clamp = (value: number, min = 0, max = 255) =>
+  Math.max(min, Math.min(max, value));
+
+const isA4Like = (width: number, height: number) => {
+  const ratio = Math.max(width, height) / Math.min(width, height);
+  return Math.abs(ratio - A4_RATIO) < 0.12;
+};
+
+const getOutputSize = (corners: DocumentCorners) => {
+  const topWidth = distance(corners.topLeftCorner, corners.topRightCorner);
+  const bottomWidth = distance(corners.bottomLeftCorner, corners.bottomRightCorner);
+  const leftHeight = distance(corners.topLeftCorner, corners.bottomLeftCorner);
+  const rightHeight = distance(corners.topRightCorner, corners.bottomRightCorner);
+  const averageWidth = (topWidth + bottomWidth) / 2;
+  const averageHeight = (leftHeight + rightHeight) / 2;
+
+  if (isA4Like(averageWidth, averageHeight)) {
+    return averageHeight >= averageWidth
+      ? { width: A4_WIDTH, height: A4_HEIGHT }
+      : { width: A4_HEIGHT, height: A4_WIDTH };
+  }
+
+  const longSide = Math.max(averageWidth, averageHeight);
+  const shortSide = Math.min(averageWidth, averageHeight);
+  const outputLongSide = OUTPUT_LONG_SIDE;
+  const outputShortSide = Math.round(
+    clamp((shortSide / longSide) * outputLongSide, OUTPUT_MIN_SHORT_SIDE, outputLongSide)
+  );
+
+  return averageHeight >= averageWidth
+    ? { width: outputShortSide, height: outputLongSide }
+    : { width: outputLongSide, height: outputShortSide };
+};
+
+const getLuminanceBounds = (data: Uint8ClampedArray) => {
+  const histogram = new Array<number>(256).fill(0);
+  const totalPixels = data.length / 4;
+
+  for (let index = 0; index < data.length; index += 4) {
+    const luminance = Math.round(
+      0.299 * data[index] + 0.587 * data[index + 1] + 0.114 * data[index + 2]
+    );
+    histogram[luminance] += 1;
+  }
+
+  const lowerTarget = totalPixels * 0.02;
+  const upperTarget = totalPixels * 0.965;
+  let cumulative = 0;
+  let low = 0;
+  let high = 255;
+
+  for (let value = 0; value < histogram.length; value += 1) {
+    cumulative += histogram[value];
+    if (cumulative >= lowerTarget) {
+      low = value;
+      break;
+    }
+  }
+
+  cumulative = 0;
+  for (let value = 0; value < histogram.length; value += 1) {
+    cumulative += histogram[value];
+    if (cumulative >= upperTarget) {
+      high = value;
+      break;
+    }
+  }
+
+  if (high - low < 42) {
+    return { low: 0, high: 255 };
+  }
+
+  return { low, high };
+};
+
+const isScannableShape = (
   corners: DocumentCorners,
   frameWidth: number,
-  frameHeight: number
+  frameHeight: number,
+  source: 'scanner' | 'opencv'
 ) => {
   const points = cornerList(corners);
   const minX = Math.min(...points.map((point) => point.x));
@@ -131,13 +302,144 @@ const isDocumentLike = (
   const areaRatio = polygonArea(points) / (frameWidth * frameHeight);
   const oppositeWidthBalance = Math.min(topWidth, bottomWidth) / Math.max(topWidth, bottomWidth);
   const oppositeHeightBalance = Math.min(leftHeight, rightHeight) / Math.max(leftHeight, rightHeight);
+  const center = averagePoint(points);
+  const guideLeft = frameWidth * GUIDE_BOUNDS.left;
+  const guideRight = frameWidth * GUIDE_BOUNDS.right;
+  const guideTop = frameHeight * GUIDE_BOUNDS.top;
+  const guideBottom = frameHeight * GUIDE_BOUNDS.bottom;
+  const guideWidth = guideRight - guideLeft;
+  const guideHeight = guideBottom - guideTop;
+  const overlapWidth = Math.max(0, Math.min(maxX, guideRight) - Math.max(minX, guideLeft));
+  const overlapHeight = Math.max(0, Math.min(maxY, guideBottom) - Math.max(minY, guideTop));
+  const guideOverlapRatio = (overlapWidth * overlapHeight) / (guideWidth * guideHeight);
+  const centerIsInGuide =
+    center.x > guideLeft &&
+    center.x < guideRight &&
+    center.y > guideTop &&
+    center.y < guideBottom;
 
-  if (ratio < DOCUMENT_RATIO_MIN || ratio > DOCUMENT_RATIO_MAX) return null;
-  if (areaRatio < 0.07 || areaRatio > 0.72) return null;
-  if (oppositeWidthBalance < 0.5 || oppositeHeightBalance < 0.5) return null;
+  if (!centerIsInGuide) return null;
+  if (ratio > SHAPE_RATIO_MAX) return null;
+  if (areaRatio < 0.045 || areaRatio > 0.82) return null;
+  if (oppositeWidthBalance < 0.32 || oppositeHeightBalance < 0.32) return null;
+
+  const a4Closeness = Math.max(0, 1 - Math.abs(ratio - A4_RATIO) / 0.34);
+  const sideBalance = (oppositeWidthBalance + oppositeHeightBalance) / 2;
+  const sourceBonus = source === 'opencv' ? 0.08 : 0.18;
+  const score =
+    areaRatio * CANDIDATE_AREA_WEIGHT +
+    guideOverlapRatio * CANDIDATE_GUIDE_WEIGHT +
+    a4Closeness * CANDIDATE_A4_WEIGHT +
+    sideBalance * 0.36 +
+    sourceBonus;
 
   return {
     areaRatio,
+    center,
+    score,
+  };
+};
+
+const cornersFromApprox = (approx: OpenCvMatLike) => {
+  if (approx.rows !== 4 || !approx.data32S) return null;
+
+  const points: DocumentPoint[] = [];
+  for (let index = 0; index < 4; index += 1) {
+    points.push({
+      x: approx.data32S[index * 2],
+      y: approx.data32S[index * 2 + 1],
+    });
+  }
+
+  return orderCorners(points);
+};
+
+const findOpenCvQuadrilateral = (
+  cv: OpenCvApi,
+  mat: OpenCvMatLike,
+  frameWidth: number,
+  frameHeight: number
+) => {
+  const gray = new cv.Mat();
+  const blurred = new cv.Mat();
+  const edges = new cv.Mat();
+  const closed = new cv.Mat();
+  const hierarchy = new cv.Mat();
+  const contours = new cv.MatVector();
+  const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(7, 7));
+  let best: DetectedDocument | null = null;
+
+  try {
+    cv.cvtColor(mat, gray, cv.COLOR_RGBA2GRAY);
+    cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0, 0);
+    cv.Canny(blurred, edges, 36, 118);
+    cv.morphologyEx(edges, closed, cv.MORPH_CLOSE, kernel);
+    cv.findContours(closed, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+    for (let index = 0; index < contours.size(); index += 1) {
+      const contour = contours.get(index);
+      const approx = new cv.Mat();
+
+      try {
+        const area = cv.contourArea(contour);
+        const frameArea = frameWidth * frameHeight;
+        if (area < frameArea * 0.035 || area > frameArea * 0.88) continue;
+
+        const perimeter = cv.arcLength(contour, true);
+        cv.approxPolyDP(contour, approx, perimeter * 0.026, true);
+        const corners = cornersFromApprox(approx);
+        if (!corners) continue;
+
+        const match = isScannableShape(corners, frameWidth, frameHeight, 'opencv');
+        if (!match) continue;
+
+        const candidate: DetectedDocument = {
+          corners,
+          frameWidth,
+          frameHeight,
+          areaRatio: match.areaRatio,
+          center: match.center,
+          score: match.score,
+        };
+
+        if (!best || candidate.score > best.score) {
+          best = candidate;
+        }
+      } finally {
+        approx.delete();
+        contour.delete();
+      }
+    }
+  } finally {
+    kernel.delete();
+    contours.delete();
+    hierarchy.delete();
+    closed.delete();
+    edges.delete();
+    blurred.delete();
+    gray.delete();
+  }
+
+  return best;
+};
+
+const smoothDetectedDocument = (
+  current: DetectedDocument,
+  previous: DetectedDocument | null
+): DetectedDocument => {
+  if (!previous || current.frameWidth !== previous.frameWidth || current.frameHeight !== previous.frameHeight) {
+    return current;
+  }
+
+  const shift = detectionShift(current, previous);
+  if (shift > 0.12) return current;
+
+  const corners = smoothCorners(previous.corners, current.corners, 0.46);
+  const points = cornerList(corners);
+  return {
+    ...current,
+    corners,
+    areaRatio: polygonArea(points) / (current.frameWidth * current.frameHeight),
     center: averagePoint(points),
   };
 };
@@ -152,10 +454,14 @@ const detectionShift = (current: DetectedDocument, previous: DetectedDocument | 
   return centerShift + areaShift;
 };
 
-const enhanceDocumentCanvas = (source: HTMLCanvasElement) => {
+const enhanceDocumentCanvas = (
+  source: HTMLCanvasElement,
+  targetWidth = source.width,
+  targetHeight = source.height
+) => {
   const canvas = document.createElement('canvas');
-  canvas.width = A4_WIDTH;
-  canvas.height = A4_HEIGHT;
+  canvas.width = targetWidth;
+  canvas.height = targetHeight;
 
   const context = canvas.getContext('2d');
   if (!context) return source;
@@ -166,24 +472,30 @@ const enhanceDocumentCanvas = (source: HTMLCanvasElement) => {
 
   const image = context.getImageData(0, 0, canvas.width, canvas.height);
   const data = image.data;
+  const { low, high } = getLuminanceBounds(data);
+  const range = Math.max(1, high - low);
 
   for (let index = 0; index < data.length; index += 4) {
     const red = data[index];
     const green = data[index + 1];
     const blue = data[index + 2];
     const luminance = 0.299 * red + 0.587 * green + 0.114 * blue;
-    const boosted = Math.max(0, Math.min(255, (luminance - 126) * 1.45 + 150));
-    const paperLift = boosted > 168 ? Math.min(255, boosted + 48) : boosted;
-    const inkDeepen = paperLift < 136 ? Math.max(0, paperLift - 34) : paperLift;
-    const saturation = 0.78;
+    const normalized = clamp(((luminance - low) / range) * 255);
+    const gammaAdjusted = Math.pow(normalized / 255, 0.82) * 255;
+    const highlightCompressed =
+      luminance > 218 ? gammaAdjusted * 0.82 + 32 : gammaAdjusted;
+    const contrasted = (highlightCompressed - 128) * 1.18 + 142;
+    const paperLift = contrasted > 178 ? clamp(contrasted + 28) : contrasted;
+    const inkDeepen = paperLift < 152 ? clamp(paperLift - 42) : paperLift;
+    const saturation = luminance > 220 ? 0.62 : 0.82;
 
-    data[index] = Math.max(0, Math.min(255, inkDeepen + (red - luminance) * saturation));
-    data[index + 1] = Math.max(0, Math.min(255, inkDeepen + (green - luminance) * saturation));
-    data[index + 2] = Math.max(0, Math.min(255, inkDeepen + (blue - luminance) * saturation));
+    data[index] = clamp(inkDeepen + (red - luminance) * saturation);
+    data[index + 1] = clamp(inkDeepen + (green - luminance) * saturation);
+    data[index + 2] = clamp(inkDeepen + (blue - luminance) * saturation);
   }
 
   context.putImageData(image, 0, 0);
-  context.filter = 'contrast(1.22) brightness(1.08) saturate(1.08)';
+  context.filter = 'contrast(1.12) brightness(1.03) saturate(1.08)';
   context.drawImage(canvas, 0, 0);
   context.filter = 'none';
 
@@ -191,25 +503,10 @@ const enhanceDocumentCanvas = (source: HTMLCanvasElement) => {
 };
 
 const fallbackGuideCorners = (width: number, height: number): DocumentCorners => {
-  const guideLeft = width * 0.06;
-  const guideRight = width * 0.94;
-  const guideTop = height * 0.12;
-  const guideBottom = height * 0.84;
-  const maxWidth = guideRight - guideLeft;
-  const maxHeight = guideBottom - guideTop;
-  let cropHeight = maxHeight;
-  let cropWidth = cropHeight / A4_RATIO;
-
-  if (cropWidth > maxWidth) {
-    cropWidth = maxWidth;
-    cropHeight = cropWidth * A4_RATIO;
-  }
-
-  const left = guideLeft + (maxWidth - cropWidth) / 2;
-  const top = guideTop + (maxHeight - cropHeight) / 2;
-  const right = left + cropWidth;
-  const bottom = top + cropHeight;
-
+  const left = width * GUIDE_BOUNDS.left;
+  const right = width * GUIDE_BOUNDS.right;
+  const top = height * GUIDE_BOUNDS.top;
+  const bottom = height * GUIDE_BOUNDS.bottom;
   return {
     topLeftCorner: { x: left, y: top },
     topRightCorner: { x: right, y: top },
@@ -218,7 +515,7 @@ const fallbackGuideCorners = (width: number, height: number): DocumentCorners =>
   };
 };
 
-const captureA4Document = (
+const captureScannableShape = (
   video: HTMLVideoElement,
   scanner: ScannerInstance,
   detected: DetectedDocument | null
@@ -236,22 +533,25 @@ const captureA4Document = (
       frame.width,
       frame.height
     );
-    const extracted = scanner.extractPaper(frame, A4_WIDTH, A4_HEIGHT, corners);
+    const outputSize = getOutputSize(corners);
+    const extracted = scanner.extractPaper(frame, outputSize.width, outputSize.height, corners);
 
     if (extracted) {
-      return enhanceDocumentCanvas(extracted);
+      return enhanceDocumentCanvas(extracted, outputSize.width, outputSize.height);
     }
   }
 
+  const fallbackCorners = fallbackGuideCorners(frame.width, frame.height);
+  const fallbackSize = getOutputSize(fallbackCorners);
   const fallbackExtracted = scanner.extractPaper(
     frame,
-    A4_WIDTH,
-    A4_HEIGHT,
-    fallbackGuideCorners(frame.width, frame.height)
+    fallbackSize.width,
+    fallbackSize.height,
+    fallbackCorners
   );
 
   if (fallbackExtracted) {
-    return enhanceDocumentCanvas(fallbackExtracted);
+    return enhanceDocumentCanvas(fallbackExtracted, fallbackSize.width, fallbackSize.height);
   }
 
   return enhanceDocumentCanvas(frame);
@@ -332,7 +632,7 @@ export function WebDocumentScanner({
   const [isCapturing, setIsCapturing] = useState(false);
   const [captureFlash, setCaptureFlash] = useState(false);
   const [autoCaptureEnabled, setAutoCaptureEnabled] = useState(true);
-  const [hint, setHint] = useState('書類を画面内に入れてください');
+  const [hint, setHint] = useState('スキャン対象を枠内に入れてください');
 
   useEffect(() => {
     autoCaptureRef.current = autoCaptureEnabled;
@@ -349,7 +649,7 @@ export function WebDocumentScanner({
       setCaptureFlash(true);
       window.setTimeout(() => setCaptureFlash(false), 170);
       setHint(reason === 'auto' ? '自動撮影しました' : 'スキャンしています');
-      const result = await captureA4Document(video, scanner, detectedRef.current);
+      const result = await captureScannableShape(video, scanner, detectedRef.current);
 
       onCapture({
         uri: result.toDataURL('image/jpeg', 0.95),
@@ -401,7 +701,7 @@ export function WebDocumentScanner({
 
         if (now - lastDetectAtRef.current > DETECT_INTERVAL_MS) {
           lastDetectAtRef.current = now;
-          const frameScale = Math.min(1, 920 / video.videoWidth);
+          const frameScale = Math.min(1, DETECTION_MAX_FRAME_WIDTH / video.videoWidth);
           frameCanvas.width = Math.round(video.videoWidth * frameScale);
           frameCanvas.height = Math.round(video.videoHeight * frameScale);
           const frameContext = frameCanvas.getContext('2d');
@@ -409,20 +709,19 @@ export function WebDocumentScanner({
           if (frameContext) {
             frameContext.drawImage(video, 0, 0, frameCanvas.width, frameCanvas.height);
             const scannerWindow = window as typeof window & {
-              cv?: {
-                imread: (source: HTMLCanvasElement) => { delete: () => void };
-              };
+              cv?: OpenCvApi;
             };
 
             if (scannerWindow.cv) {
-              const mat = scannerWindow.cv.imread(frameCanvas);
+              const cv = scannerWindow.cv;
+              const mat = cv.imread(frameCanvas);
               const contour = scanner.findPaperContour(mat);
               let nextDetected: DetectedDocument | null = null;
 
               if (contour) {
                 const corners = scanner.getCornerPoints(contour);
                 if (hasCorners(corners)) {
-                  const match = isDocumentLike(corners, frameCanvas.width, frameCanvas.height);
+                  const match = isScannableShape(corners, frameCanvas.width, frameCanvas.height, 'scanner');
                   if (match) {
                     nextDetected = {
                       corners,
@@ -430,21 +729,37 @@ export function WebDocumentScanner({
                       frameHeight: frameCanvas.height,
                       areaRatio: match.areaRatio,
                       center: match.center,
+                      score: match.score,
                     };
                   }
                 }
                 contour.delete();
               }
 
+              const openCvDetected = findOpenCvQuadrilateral(
+                cv,
+                mat,
+                frameCanvas.width,
+                frameCanvas.height
+              );
+
+              if (openCvDetected && (!nextDetected || openCvDetected.score > nextDetected.score)) {
+                nextDetected = openCvDetected;
+              }
+
               mat.delete();
 
               if (nextDetected) {
-                const shift = detectionShift(nextDetected, previousDetectedRef.current);
+                const smoothedDetected = smoothDetectedDocument(
+                  nextDetected,
+                  previousDetectedRef.current
+                );
+                const shift = detectionShift(smoothedDetected, previousDetectedRef.current);
                 stableSinceRef.current =
                   shift < 0.04 ? stableSinceRef.current ?? now : now;
-                previousDetectedRef.current = nextDetected;
-                detectedRef.current = nextDetected;
-                setHint(autoCaptureRef.current ? '書類を検出中 自動撮影します' : '書類を検出中');
+                previousDetectedRef.current = smoothedDetected;
+                detectedRef.current = smoothedDetected;
+                setHint(autoCaptureRef.current ? '対象を検出中 自動撮影します' : '対象を検出中');
 
                 const stableFor = now - (stableSinceRef.current ?? now);
                 const canAutoCapture =
@@ -459,7 +774,7 @@ export function WebDocumentScanner({
                 }
               } else {
                 resetDetection();
-                setHint('A4書類を画面内に入れてください');
+                setHint('スキャン対象を枠内に入れてください');
               }
             }
           }
@@ -501,7 +816,7 @@ export function WebDocumentScanner({
         video.srcObject = stream;
         await video.play();
         setReady(true);
-        setHint('A4書類を画面内に入れてください');
+        setHint('スキャン対象を枠内に入れてください');
         detect();
       } catch (error) {
         console.error('[WebScanner] failed to start camera', error);

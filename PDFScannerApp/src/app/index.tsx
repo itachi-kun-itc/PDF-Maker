@@ -61,6 +61,9 @@ type PendingPdf = {
 };
 
 const PDF_HISTORY_STORAGE_KEY = 'pdfscanner.createdPdfs.v1';
+const PDF_HISTORY_WEB_DB_NAME = 'pdfscanner.history.db';
+const PDF_HISTORY_WEB_STORE_NAME = 'pdfHistory';
+const PDF_HISTORY_WEB_RECORD_KEY = 'items';
 const CAMERA_PERMISSION_STORAGE_KEY = 'pdfscanner.cameraPermissionAsked.v1';
 
 const isDesktopWeb = () => {
@@ -153,11 +156,69 @@ const getPdfHistoryFileUri = async () => {
   return `${FileSystem.documentDirectory}${PDF_HISTORY_STORAGE_KEY}.json`;
 };
 
+const openWebPdfHistoryDb = () =>
+  new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open(PDF_HISTORY_WEB_DB_NAME, 1);
+
+    request.onupgradeneeded = () => {
+      const database = request.result;
+      if (!database.objectStoreNames.contains(PDF_HISTORY_WEB_STORE_NAME)) {
+        database.createObjectStore(PDF_HISTORY_WEB_STORE_NAME);
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error ?? new Error('PDF履歴DBを開けませんでした。'));
+  });
+
+const readWebPdfHistory = async () => {
+  const database = await openWebPdfHistoryDb();
+
+  try {
+    const history = await new Promise<PdfHistoryItem[]>((resolve, reject) => {
+      const transaction = database.transaction(PDF_HISTORY_WEB_STORE_NAME, 'readonly');
+      const store = transaction.objectStore(PDF_HISTORY_WEB_STORE_NAME);
+      const request = store.get(PDF_HISTORY_WEB_RECORD_KEY);
+
+      request.onsuccess = () => resolve(Array.isArray(request.result) ? request.result : []);
+      request.onerror = () => reject(request.error ?? new Error('PDF履歴を読み込めませんでした。'));
+    });
+
+    if (history.length > 0) return history;
+
+    const legacyRaw = localStorage.getItem(PDF_HISTORY_STORAGE_KEY);
+    if (!legacyRaw) return [];
+
+    const legacyHistory = JSON.parse(legacyRaw) as PdfHistoryItem[];
+    await writeWebPdfHistory(legacyHistory);
+    localStorage.removeItem(PDF_HISTORY_STORAGE_KEY);
+    return legacyHistory;
+  } finally {
+    database.close();
+  }
+};
+
+const writeWebPdfHistory = async (history: PdfHistoryItem[]) => {
+  const database = await openWebPdfHistoryDb();
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const transaction = database.transaction(PDF_HISTORY_WEB_STORE_NAME, 'readwrite');
+      const store = transaction.objectStore(PDF_HISTORY_WEB_STORE_NAME);
+      const request = store.put(history, PDF_HISTORY_WEB_RECORD_KEY);
+
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error ?? new Error('PDF履歴を保存できませんでした。'));
+    });
+    localStorage.removeItem(PDF_HISTORY_STORAGE_KEY);
+  } finally {
+    database.close();
+  }
+};
+
 const readPdfHistory = async (): Promise<PdfHistoryItem[]> => {
   try {
     if (Platform.OS === 'web') {
-      const raw = localStorage.getItem(PDF_HISTORY_STORAGE_KEY);
-      return raw ? JSON.parse(raw) : [];
+      return readWebPdfHistory();
     }
 
     const FileSystem = await import('expo-file-system/legacy');
@@ -175,7 +236,7 @@ const readPdfHistory = async (): Promise<PdfHistoryItem[]> => {
 
 const writePdfHistory = async (history: PdfHistoryItem[]) => {
   if (Platform.OS === 'web') {
-    localStorage.setItem(PDF_HISTORY_STORAGE_KEY, JSON.stringify(history));
+    await writeWebPdfHistory(history);
     return;
   }
 
@@ -225,6 +286,11 @@ const toSafePdfFileName = (name: string) => {
   return `${safeBaseName}.pdf`;
 };
 
+const isSamePdfHistoryItem = (left: PdfHistoryItem, right: PdfHistoryItem) =>
+  left.id === right.id &&
+  left.fileName === right.fileName &&
+  left.createdAt === right.createdAt;
+
 const dataUriToBlob = (dataUri: string) => {
   const [header, base64 = ''] = dataUri.split(',');
   const mimeType = header.match(/data:(.*?);base64/)?.[1] ?? 'application/octet-stream';
@@ -251,6 +317,9 @@ export default function HomeScreen() {
   const [pendingPdf, setPendingPdf] = useState<PendingPdf | null>(null);
   const [fileNameModalVisible, setFileNameModalVisible] = useState(false);
   const [pdfFileNameInput, setPdfFileNameInput] = useState('');
+  const [isCreatingPdf, setIsCreatingPdf] = useState(false);
+  const [isSavingPdf, setIsSavingPdf] = useState(false);
+  const [isReorderingPages, setIsReorderingPages] = useState(false);
 
   useEffect(() => {
     void readPdfHistory().then(setCreatedPdfs);
@@ -332,12 +401,15 @@ export default function HomeScreen() {
   };
 
   const createAndSavePdf = async () => {
+    if (isCreatingPdf || isSavingPdf) return;
+
     if (pages.length === 0) {
       Alert.alert('PDF作成', '先に1枚以上の画像を追加してください。');
       return;
     }
 
     try {
+      setIsCreatingPdf(true);
       setStatusMessage(`PDF結合中... (${pages.length}枚)`);
 
       const pdf = await createImagePdf(pages);
@@ -360,24 +432,31 @@ export default function HomeScreen() {
       console.error('[PDF] failed to create PDF', error);
       setStatusMessage('PDF作成でエラーが発生しました。');
       Alert.alert('PDF作成エラー', error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsCreatingPdf(false);
     }
   };
 
   const savePendingPdf = async () => {
-    if (!pendingPdf) return;
+    if (!pendingPdf || isSavingPdf) return;
+
+    const pdfToSave = pendingPdf;
 
     try {
+      setIsSavingPdf(true);
+      setPendingPdf(null);
+      setFileNameModalVisible(false);
       const fileName = toSafePdfFileName(pdfFileNameInput);
-      let uri = pendingPdf.pdfDataUri;
-      let previewUri = pendingPdf.previewDataUri;
-      let fileSize = pendingPdf.fileSize;
+      let uri = pdfToSave.pdfDataUri;
+      let previewUri = pdfToSave.previewDataUri;
+      let fileSize = pdfToSave.fileSize;
 
       if (Platform.OS !== 'web') {
         const FileSystem = await import('expo-file-system/legacy');
-        const pdfBase64 = pendingPdf.pdfDataUri.split(',')[1] ?? '';
-        const previewBase64 = pendingPdf.previewDataUri.split(',')[1] ?? '';
+        const pdfBase64 = pdfToSave.pdfDataUri.split(',')[1] ?? '';
+        const previewBase64 = pdfToSave.previewDataUri.split(',')[1] ?? '';
         uri = `${FileSystem.documentDirectory}${fileName}`;
-        previewUri = `${FileSystem.documentDirectory}${pendingPdf.id}_preview.jpg`;
+        previewUri = `${FileSystem.documentDirectory}${pdfToSave.id}_preview.jpg`;
         await FileSystem.writeAsStringAsync(uri, pdfBase64, {
           encoding: 'base64',
         });
@@ -388,30 +467,36 @@ export default function HomeScreen() {
       }
 
       const historyItem: PdfHistoryItem = {
-        id: pendingPdf.id,
+        id: pdfToSave.id,
         fileName,
         uri,
         previewUri,
-        createdAt: pendingPdf.createdAt,
-        pageCount: pendingPdf.pageCount,
+        createdAt: pdfToSave.createdAt,
+        pageCount: pdfToSave.pageCount,
         fileSize,
       };
       const nextHistory = [historyItem, ...createdPdfs];
 
       await updateCreatedPdfs(nextHistory);
-      setPendingPdf(null);
-      setFileNameModalVisible(false);
       setPdfFileNameInput('');
+      setFileNameModalVisible(false);
+      setPendingPdf(null);
       setActiveTab('created');
       setStatusMessage(`PDFを作成しました: ${fileName}`);
     } catch (error) {
       console.error('[PDF] failed to save named PDF', error);
       setStatusMessage('PDF保存でエラーが発生しました。');
       Alert.alert('PDF保存エラー', error instanceof Error ? error.message : String(error));
+      setPendingPdf(pdfToSave);
+      setFileNameModalVisible(true);
+    } finally {
+      setIsSavingPdf(false);
     }
   };
 
   const cancelPendingPdfName = () => {
+    if (isSavingPdf) return;
+
     setPendingPdf(null);
     setFileNameModalVisible(false);
     setPdfFileNameInput('');
@@ -469,6 +554,12 @@ export default function HomeScreen() {
     );
     if (!confirmed) return;
 
+    let nextHistory: PdfHistoryItem[] = [];
+    setCreatedPdfs((currentHistory) => {
+      nextHistory = currentHistory.filter((pdf) => !isSamePdfHistoryItem(pdf, item));
+      return nextHistory;
+    });
+
     try {
       if (Platform.OS !== 'web') {
         const FileSystem = await import('expo-file-system/legacy');
@@ -478,11 +569,11 @@ export default function HomeScreen() {
         }
       }
 
-      const nextHistory = createdPdfs.filter((pdf) => pdf.id !== item.id);
-      await updateCreatedPdfs(nextHistory);
+      await writePdfHistory(nextHistory);
       setStatusMessage(`${item.fileName} を削除しました。`);
     } catch (error) {
       console.error('[PDF] failed to delete history item', error);
+      void readPdfHistory().then(setCreatedPdfs);
       Alert.alert('削除エラー', error instanceof Error ? error.message : String(error));
     }
   };
@@ -571,9 +662,10 @@ export default function HomeScreen() {
       <View style={[styles.pageCard, isActive && styles.pageCardActive]}>
         <Pressable
           style={styles.deleteButton}
+          disabled={isActive || isReorderingPages}
           onPress={() => setPages((prev) => prev.filter((page) => page.id !== item.id))}
         >
-          <Text style={styles.deleteText}>x</Text>
+          <Text style={styles.deleteText}>✕</Text>
         </Pressable>
 
         <View style={styles.pageNumber}>
@@ -581,6 +673,7 @@ export default function HomeScreen() {
         </View>
 
         <Pressable
+          disabled={isActive || isReorderingPages}
           onPress={() => {
             setPreviewImage(item.uri);
             setPreviewVisible(true);
@@ -602,9 +695,9 @@ export default function HomeScreen() {
         </View>
 
         <Pressable
-          style={styles.dragHandle}
-          onLongPress={drag}
-          delayLongPress={120}
+          style={[styles.dragHandle, isActive && styles.dragHandleActive]}
+          onPressIn={drag}
+          hitSlop={8}
           accessibilityRole="button"
           accessibilityLabel="順番を入れ替える"
         >
@@ -672,7 +765,14 @@ export default function HomeScreen() {
       </View>
 
       {statusMessage ? (
-        <Text style={styles.statusText}>{statusMessage}</Text>
+        <>
+          <Text style={styles.statusText}>{statusMessage}</Text>
+          {isCreatingPdf ? (
+            <View style={styles.statusProgressTrack}>
+              <View style={styles.statusProgressFill} />
+            </View>
+          ) : null}
+        </>
       ) : null}
     </View>
   );
@@ -686,8 +786,16 @@ export default function HomeScreen() {
           data={pages}
           keyExtractor={(item) => item.id}
           renderItem={renderPage}
-          onDragEnd={({ data }) => setPages(data)}
-          activationDistance={4}
+          onDragBegin={() => setIsReorderingPages(true)}
+          onRelease={() => setIsReorderingPages(false)}
+          onDragEnd={({ data }) => {
+            setPages(data);
+            setIsReorderingPages(false);
+          }}
+          activationDistance={8}
+          autoscrollThreshold={96}
+          autoscrollSpeed={180}
+          dragItemOverflow
           style={styles.list}
           containerStyle={styles.list}
           contentContainerStyle={[
@@ -724,8 +832,11 @@ export default function HomeScreen() {
                   onPress={() => {
                     void createAndSavePdf();
                   }}
+                  disabled={isCreatingPdf || isSavingPdf}
                 >
-                  <Text style={styles.buttonText}>結合PDFを作成</Text>
+                  <Text style={styles.buttonText}>
+                    {isCreatingPdf ? 'PDF作成中...' : '結合PDFを作成'}
+                  </Text>
                 </Pressable>
               </View>
 
@@ -752,7 +863,7 @@ export default function HomeScreen() {
         >
           <Text style={styles.sectionTitle}>作成済みPDF ({createdPdfs.length})</Text>
           <Text style={styles.emptyText}>
-            PDFをタップすると開きます。長押しすると削除できます。
+            PDFをタップすると保存できます。長押しすると削除できます。
           </Text>
 
           {createdPdfs.length === 0 ? (
@@ -846,7 +957,7 @@ export default function HomeScreen() {
       />
 
       <Modal
-        visible={fileNameModalVisible}
+        visible={fileNameModalVisible && Boolean(pendingPdf) && !isSavingPdf}
         transparent
         animationType="fade"
         onRequestClose={cancelPendingPdfName}
@@ -866,6 +977,7 @@ export default function HomeScreen() {
               onSubmitEditing={() => {
                 void savePendingPdf();
               }}
+              editable={!isSavingPdf}
             />
             <View style={styles.modalActionRow}>
               <Pressable
@@ -875,6 +987,7 @@ export default function HomeScreen() {
                   pressed && styles.buttonPressed,
                 ]}
                 onPress={cancelPendingPdfName}
+                disabled={isSavingPdf}
               >
                 <Text style={styles.modalButtonText}>キャンセル</Text>
               </Pressable>
@@ -886,8 +999,11 @@ export default function HomeScreen() {
                 onPress={() => {
                   void savePendingPdf();
                 }}
+                disabled={isSavingPdf}
               >
-                <Text style={styles.modalButtonText}>保存</Text>
+                <Text style={styles.modalButtonText}>
+                  {isSavingPdf ? '保存中...' : '保存'}
+                </Text>
               </Pressable>
             </View>
           </View>
@@ -990,6 +1106,20 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     lineHeight: 18,
   },
+  statusProgressTrack: {
+    width: 150,
+    height: 3,
+    overflow: 'hidden',
+    borderRadius: 999,
+    backgroundColor: '#183252',
+    marginTop: 6,
+  },
+  statusProgressFill: {
+    width: '62%',
+    height: '100%',
+    borderRadius: 999,
+    backgroundColor: '#8FB8FF',
+  },
   statusText: {
     marginTop: 10,
     color: '#8FB8FF',
@@ -1015,6 +1145,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     padding: 15,
     marginBottom: 12,
+    minHeight: 122,
     position: 'relative',
   },
   pageCardActive: {
@@ -1078,10 +1209,15 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   dragHandle: {
-    width: 36,
-    height: 80,
+    width: 48,
+    height: 90,
     justifyContent: 'center',
     alignItems: 'center',
+    marginLeft: 8,
+    borderRadius: 10,
+  },
+  dragHandleActive: {
+    backgroundColor: '#1B3558',
   },
   dragText: {
     fontSize: 18,
