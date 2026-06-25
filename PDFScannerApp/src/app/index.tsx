@@ -16,6 +16,7 @@ import DraggableFlatList, {
   RenderItemParams,
 } from 'react-native-draggable-flatlist';
 
+import { WebDocumentScanner } from '@/components/WebDocumentScanner';
 import {
   scanDocumentImage,
 } from '@/utils/document-scanner';
@@ -136,6 +137,7 @@ export default function HomeScreen() {
   const [previewVisible, setPreviewVisible] = useState(false);
   const [previewImage, setPreviewImage] = useState('');
   const [cameraModeVisible, setCameraModeVisible] = useState(false);
+  const [webScannerVisible, setWebScannerVisible] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
 
   const addPage = (asset: ImagePicker.ImagePickerAsset) => {
@@ -173,6 +175,12 @@ export default function HomeScreen() {
   };
 
   const launchDocumentScan = async () => {
+    if (Platform.OS === 'web') {
+      setStatusMessage('書類スキャンを起動します。カメラの許可を求められたら許可してください。');
+      setWebScannerVisible(true);
+      return;
+    }
+
     try {
       setStatusMessage('');
       setStatusMessage('書類画像を選択してください。選択後に自動で書類部分を切り出します。');
@@ -508,6 +516,19 @@ export default function HomeScreen() {
           </Pressable>
         </Pressable>
       </Modal>
+
+      <WebDocumentScanner
+        visible={webScannerVisible}
+        onCancel={() => setWebScannerVisible(false)}
+        onCapture={(page) => {
+          addScannedPages([page]);
+          setWebScannerVisible(false);
+          setStatusMessage('書類スキャンを1枚追加しました。');
+        }}
+        onError={(message) => {
+          setStatusMessage(`書類スキャンに失敗しました: ${message}`);
+        }}
+      />
 
       <Modal visible={previewVisible} transparent animationType="fade">
         <View style={styles.previewContainer}>

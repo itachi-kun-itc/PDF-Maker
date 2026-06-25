@@ -4,20 +4,39 @@ export type ScannedDocumentPage = {
   height?: number;
 };
 
+export type DocumentPoint = {
+  x: number;
+  y: number;
+};
+
+export type DocumentCorners = {
+  topLeftCorner: DocumentPoint;
+  topRightCorner: DocumentPoint;
+  bottomLeftCorner: DocumentPoint;
+  bottomRightCorner: DocumentPoint;
+};
+
 const OPENCV_SCRIPT_ID = 'opencv-js-document-scanner';
 const JSCANIFY_SCRIPT_ID = 'jscanify-document-scanner';
-const OPENCV_URL = 'https://docs.opencv.org/4.8.0/opencv.js';
-const JSCANIFY_URL = 'https://cdn.jsdelivr.net/gh/ColonelParrot/jscanify@1.4.2/src/jscanify.min.js';
+const OPENCV_URL = 'https://cdn.jsdelivr.net/npm/jscanify@1.4.2/src/opencv.js';
+const JSCANIFY_URL = 'https://cdn.jsdelivr.net/npm/jscanify@1.4.2/src/jscanify.js';
+
+type OpenCvMat = {
+  delete: () => void;
+};
 
 type ScannerWindow = Window &
   typeof globalThis & {
     cv?: unknown;
     jscanify?: new () => {
+      findPaperContour: (image: OpenCvMat) => (OpenCvMat & { data32S: Int32Array }) | null;
+      getCornerPoints: (contour: OpenCvMat) => Partial<DocumentCorners>;
       extractPaper: (
         image: HTMLImageElement | HTMLCanvasElement,
         resultWidth: number,
-        resultHeight: number
-      ) => HTMLCanvasElement;
+        resultHeight: number,
+        cornerPoints?: DocumentCorners
+      ) => HTMLCanvasElement | null;
     };
     Module?: {
       onRuntimeInitialized?: () => void;
@@ -72,6 +91,22 @@ const loadJscanify = async () => {
   await loadScript(JSCANIFY_SCRIPT_ID, JSCANIFY_URL);
 };
 
+export const loadDocumentScannerLibraries = async () => {
+  await loadOpenCv();
+  await loadJscanify();
+};
+
+export const createDocumentScanner = async () => {
+  await loadDocumentScannerLibraries();
+
+  const scannerWindow = window as ScannerWindow;
+  if (!scannerWindow.jscanify) {
+    throw new Error('書類スキャナーを初期化できませんでした。');
+  }
+
+  return new scannerWindow.jscanify();
+};
+
 const loadImage = (uri: string) =>
   new Promise<HTMLImageElement>((resolve, reject) => {
     const image = new Image();
@@ -81,19 +116,19 @@ const loadImage = (uri: string) =>
   });
 
 export const scanDocumentImage = async (uri: string): Promise<ScannedDocumentPage> => {
-  await loadOpenCv();
-  await loadJscanify();
-
-  const scannerWindow = window as ScannerWindow;
-  if (!scannerWindow.jscanify) {
-    throw new Error('書類スキャナーを初期化できませんでした。');
-  }
-
+  const scanner = await createDocumentScanner();
   const image = await loadImage(uri);
-  const width = image.naturalWidth || image.width || 1200;
-  const height = image.naturalHeight || image.height || 1600;
-  const scanner = new scannerWindow.jscanify();
+  const width = image.naturalWidth || image.width || 1240;
+  const height = image.naturalHeight || image.height || 1754;
   const canvas = scanner.extractPaper(image, width, height);
+
+  if (!canvas) {
+    return {
+      uri,
+      width,
+      height,
+    };
+  }
 
   return {
     uri: canvas.toDataURL('image/jpeg', 0.95),
