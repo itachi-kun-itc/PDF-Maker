@@ -85,9 +85,10 @@ const OUTPUT_LONG_SIDE = A4_HEIGHT;
 const OUTPUT_MIN_SHORT_SIDE = 640;
 const DETECT_INTERVAL_MS = 110;
 const DETECTION_MAX_FRAME_WIDTH = 1120;
-const DETECTION_HOLD_MS = 2600;
-const AUTO_CAPTURE_STABLE_MS = 950;
+const DETECTION_HOLD_MS = 4200;
+const AUTO_CAPTURE_STABLE_MS = 650;
 const AUTO_CAPTURE_COOLDOWN_MS = 2200;
+const AUTO_CAPTURE_RECENT_DETECTION_MS = 1500;
 const DOCUMENT_ACCENT = '#2F86FF';
 const GUIDE_BOUNDS = {
   left: 0.06,
@@ -95,7 +96,7 @@ const GUIDE_BOUNDS = {
   top: 0.12,
   bottom: 0.84,
 };
-const SHAPE_RATIO_MAX = 4.8;
+const SHAPE_RATIO_MAX = 5.8;
 const CANDIDATE_AREA_WEIGHT = 1.9;
 const CANDIDATE_GUIDE_WEIGHT = 1.25;
 const CANDIDATE_A4_WEIGHT = 0.32;
@@ -274,8 +275,8 @@ const isScannableShape = (
   const maxX = Math.max(...points.map((point) => point.x));
   const minY = Math.min(...points.map((point) => point.y));
   const maxY = Math.max(...points.map((point) => point.y));
-  const marginX = frameWidth * 0.003;
-  const marginY = frameHeight * 0.003;
+  const marginX = frameWidth * 0.001;
+  const marginY = frameHeight * 0.001;
 
   if (
     minX < marginX ||
@@ -293,7 +294,7 @@ const isScannableShape = (
   const averageWidth = (topWidth + bottomWidth) / 2;
   const averageHeight = (leftHeight + rightHeight) / 2;
 
-  if (averageWidth < frameWidth * 0.12 || averageHeight < frameHeight * 0.12) {
+  if (averageWidth < frameWidth * 0.1 || averageHeight < frameHeight * 0.1) {
     return null;
   }
 
@@ -321,8 +322,8 @@ const isScannableShape = (
 
   if (!centerIsInGuide) return null;
   if (ratio > SHAPE_RATIO_MAX) return null;
-  if (areaRatio < 0.025 || areaRatio > 0.92) return null;
-  if (oppositeWidthBalance < 0.18 || oppositeHeightBalance < 0.18) return null;
+  if (areaRatio < 0.018 || areaRatio > 0.94) return null;
+  if (oppositeWidthBalance < 0.14 || oppositeHeightBalance < 0.14) return null;
 
   const a4Closeness = Math.max(0, 1 - Math.abs(ratio - A4_RATIO) / 0.34);
   const sideBalance = (oppositeWidthBalance + oppositeHeightBalance) / 2;
@@ -384,10 +385,10 @@ const findOpenCvQuadrilateral = (
       try {
         const area = cv.contourArea(contour);
         const frameArea = frameWidth * frameHeight;
-        if (area < frameArea * 0.02 || area > frameArea * 0.92) continue;
+        if (area < frameArea * 0.014 || area > frameArea * 0.94) continue;
 
         const perimeter = cv.arcLength(contour, true);
-        for (const epsilonRatio of [0.018, 0.026, 0.038]) {
+        for (const epsilonRatio of [0.014, 0.02, 0.028, 0.04, 0.052]) {
           const approx = new cv.Mat();
 
           try {
@@ -422,9 +423,11 @@ const findOpenCvQuadrilateral = (
     cv.cvtColor(mat, gray, cv.COLOR_RGBA2GRAY);
     cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0, 0);
     for (const [low, high] of [
+      [14, 62],
       [24, 92],
       [36, 118],
       [52, 154],
+      [72, 190],
     ]) {
       cv.Canny(blurred, edges, low, high);
       cv.morphologyEx(edges, closed, cv.MORPH_CLOSE, kernel);
@@ -959,10 +962,10 @@ const styles = {
   },
   scanFrame: {
     position: 'absolute',
-    left: '6%',
-    right: '6%',
-    top: '12%',
-    bottom: '16%',
+    left: '3%',
+    right: '3%',
+    top: '9.5%',
+    bottom: '13.5%',
     borderRadius: 4,
     pointerEvents: 'none',
     boxShadow: '0 0 0 9999px rgba(0,0,0,0.28)',
@@ -1028,15 +1031,15 @@ const styles = {
   },
   closeButton: {
     position: 'absolute',
-    top: 'max(18px, env(safe-area-inset-top))',
-    left: 24,
-    width: 58,
-    height: 58,
-    borderRadius: 29,
+    top: 'max(10px, calc(env(safe-area-inset-top) + 6px))',
+    left: 14,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     border: '1px solid rgba(255,255,255,0.28)',
     background: 'rgba(18, 34, 45, 0.62)',
     color: '#fff',
-    fontSize: 36,
+    fontSize: 26,
     lineHeight: 1,
     padding: 0,
     display: 'flex',
@@ -1047,11 +1050,11 @@ const styles = {
   },
   topPill: {
     position: 'absolute',
-    top: 'max(18px, env(safe-area-inset-top))',
+    top: 'max(10px, calc(env(safe-area-inset-top) + 6px))',
     left: '50%',
-    width: 180,
-    height: 54,
-    borderRadius: 27,
+    width: 116,
+    height: 34,
+    borderRadius: 17,
     transform: 'translateX(-50%)',
     background: '#000',
     display: 'flex',
@@ -1059,15 +1062,15 @@ const styles = {
     justifyContent: 'center',
   },
   readyDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
     background: '#64D96E',
   },
   loadingDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
     background: '#D8A83A',
   },
   statusPanel: {

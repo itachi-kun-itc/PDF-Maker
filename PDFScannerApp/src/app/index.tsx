@@ -104,12 +104,6 @@ type PdfJsLib = {
   };
 };
 
-const isDesktopWeb = () => {
-  if (Platform.OS !== 'web') return false;
-  if (typeof navigator === 'undefined') return false;
-  return !/iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-};
-
 const isJpegPage = (page: ScanPage) => {
   const mimeType = page.mimeType?.toLowerCase() ?? '';
   const fileName = page.fileName.toLowerCase();
@@ -881,7 +875,6 @@ export default function HomeScreen() {
           share?: (data: ShareData) => Promise<void>;
         };
         const shareData: ShareData = {
-          title: item.fileName,
           files: [file],
         };
 
@@ -1400,29 +1393,17 @@ export default function HomeScreen() {
                 pressed && styles.buttonPressed,
               ]}
               onPress={async () => {
-                setCameraModeVisible(false);
-                if (isDesktopWeb()) {
-                  await launchFilePicker();
-                  return;
+                if (Platform.OS === 'web') {
+                  const pickerPromise = launchFilePicker();
+                  setCameraModeVisible(false);
+                  await pickerPromise;
+                } else {
+                  await launchLibrary();
+                  setCameraModeVisible(false);
                 }
-                await launchLibrary();
               }}
             >
-              <Text style={styles.modalButtonText}>写真ライブラリ</Text>
-            </Pressable>
-
-            <Pressable
-              style={({ pressed }) => [
-                styles.modalButton,
-                styles.modalButtonSecondary,
-                pressed && styles.buttonPressed,
-              ]}
-              onPress={async () => {
-                setCameraModeVisible(false);
-                await launchFilePicker();
-              }}
-            >
-              <Text style={styles.modalButtonText}>ファイルを選択</Text>
+              <Text style={styles.modalButtonText}>写真／ファイルから選択</Text>
             </Pressable>
 
             <Pressable
@@ -1505,16 +1486,25 @@ export default function HomeScreen() {
         </View>
       </Modal>
 
-      <Modal visible={previewVisible} transparent animationType="fade">
+      <Modal
+        visible={previewVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setPreviewVisible(false)}
+      >
         <View style={styles.previewContainer}>
+          <Image source={{ uri: previewImage }} style={styles.previewImage} />
+
           <Pressable
-            style={styles.closePreview}
+            style={[
+              styles.closePreview,
+              { top: Math.max(insets.top + 12, 24) },
+            ]}
+            hitSlop={12}
             onPress={() => setPreviewVisible(false)}
           >
             <Text style={styles.closePreviewText}>✕</Text>
           </Pressable>
-
-          <Image source={{ uri: previewImage }} style={styles.previewImage} />
         </View>
       </Modal>
     </SafeAreaView>
@@ -1781,14 +1771,24 @@ const styles = StyleSheet.create({
   },
   closePreview: {
     position: 'absolute',
-    top: 60,
-    right: 30,
-    zIndex: 999,
+    right: 16,
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: 'rgba(7,18,35,0.78)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.24)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 1000,
+    elevation: 20,
   },
   closePreviewText: {
     color: '#FFF',
-    fontSize: 32,
+    fontSize: 30,
     fontWeight: 'bold',
+    lineHeight: 34,
+    textAlign: 'center',
   },
   modalBackdrop: {
     flex: 1,
