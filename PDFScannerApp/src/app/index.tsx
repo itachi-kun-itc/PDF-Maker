@@ -1,6 +1,3 @@
-// これはコミット用のテストです。
-// 追加のテストコメントです。
-// コミットテスト：更新版
 import { useEffect, useState } from 'react';
 import {
   Alert,
@@ -79,6 +76,7 @@ const PDFJS_VERSION = '3.11.174';
 const A4_PORTRAIT_WIDTH = 595.28;
 const A4_PORTRAIT_HEIGHT = 841.89;
 const PDF_IMAGE_PAGE_MARGIN = 36;
+const WEB_CACHE_CLEARED_STORAGE_KEY = 'pdfscanner.webCacheCleared.v1';
 
 type PdfProgressCallback = (progress: number) => void;
 type PdfJsViewport = {
@@ -605,6 +603,37 @@ export default function HomeScreen() {
     };
 
     void loadCreatedPdfs();
+  }, []);
+
+  useEffect(() => {
+    const clearOldWebCaches = async () => {
+      if (Platform.OS !== 'web' || typeof window === 'undefined') {
+        return;
+      }
+
+      if (localStorage.getItem(WEB_CACHE_CLEARED_STORAGE_KEY) === 'true') {
+        return;
+      }
+
+      try {
+        if (typeof caches !== 'undefined') {
+          const cacheNames = await caches.keys();
+          await Promise.all(cacheNames.map((cacheName) => caches.delete(cacheName)));
+        }
+
+        if ('serviceWorker' in navigator) {
+          const registrations = await navigator.serviceWorker.getRegistrations();
+          await Promise.all(registrations.map((registration) => registration.unregister()));
+        }
+
+        localStorage.setItem(WEB_CACHE_CLEARED_STORAGE_KEY, 'true');
+        console.info('[Web] 古いキャッシュとサービスワーカーを削除しました。');
+      } catch (error) {
+        console.warn('[Web] キャッシュ削除に失敗しました。', error);
+      }
+    };
+
+    void clearOldWebCaches();
   }, []);
 
   useEffect(() => {
