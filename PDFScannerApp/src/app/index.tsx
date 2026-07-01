@@ -688,7 +688,9 @@ export default function HomeScreen() {
       }
     };
 
-    void askInitialCameraPermission();
+    if (Platform.OS !== 'web') {
+      void askInitialCameraPermission();
+    }
   }, []);
 
   const updateCreatedPdfs = async (nextHistory: PdfHistoryItem[]) => {
@@ -1371,11 +1373,12 @@ export default function HomeScreen() {
         animationType="fade"
         onRequestClose={() => setCameraModeVisible(false)}
       >
-        <Pressable
-          style={styles.modalBackdrop}
-          onPress={() => setCameraModeVisible(false)}
-        >
-          <View style={styles.modalSheet} pointerEvents="box-none">
+        <View style={styles.modalBackdrop}>
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => setCameraModeVisible(false)}
+          />
+          <View style={styles.modalSheet}>
             <Text style={styles.modalTitle}>撮影方法を選択</Text>
 
             <Pressable
@@ -1435,7 +1438,7 @@ export default function HomeScreen() {
               <Text style={styles.modalCancelText}>キャンセル</Text>
             </Pressable>
           </View>
-        </Pressable>
+        </View>
       </Modal>
 
       <WebDocumentScanner
