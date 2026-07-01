@@ -70,14 +70,11 @@ const PDF_HISTORY_WEB_DB_NAME = 'pdfscanner.history.db';
 const PDF_HISTORY_WEB_STORE_NAME = 'pdfHistory';
 const PDF_HISTORY_WEB_RECORD_KEY = 'items';
 const PDF_HISTORY_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
-const CAMERA_PERMISSION_STORAGE_KEY = 'pdfscanner.cameraPermissionAsked.v1';
 const PDFJS_SCRIPT_ID = 'pdfjs-preview-renderer';
 const PDFJS_VERSION = '3.11.174';
 const A4_PORTRAIT_WIDTH = 595.28;
 const A4_PORTRAIT_HEIGHT = 841.89;
 const PDF_IMAGE_PAGE_MARGIN = 36;
-const WEB_CACHE_CLEARED_STORAGE_KEY = 'pdfscanner.webCacheCleared.v1';
-
 type PdfProgressCallback = (progress: number) => void;
 type PdfJsViewport = {
   width: number;
@@ -606,7 +603,9 @@ export default function HomeScreen() {
   }, []);
 
   useEffect(() => {
-    const clearOldWebCaches = async () => {
+    return undefined;
+
+    /* const clearOldWebCaches = async () => {
       if (Platform.OS !== 'web' || typeof window === 'undefined') {
         return;
       }
@@ -633,7 +632,7 @@ export default function HomeScreen() {
       }
     };
 
-    void clearOldWebCaches();
+    void clearOldWebCaches(); */
   }, []);
 
   useEffect(() => {
