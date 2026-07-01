@@ -23,6 +23,7 @@
     },
     "web": {
       "output": "static",
+      "publicPath": "/pdf_itc/",
       "display": "standalone",
       "themeColor": "#06152A",
       "backgroundColor": "#06152A",

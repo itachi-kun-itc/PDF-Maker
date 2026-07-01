@@ -2,6 +2,7 @@
   "name": "pdfscannerapp",
   "main": "expo-router/entry",
   "version": "1.0.0",
+  "homepage": "https://itachi-kun-itc.github.io/pdf_itc/",
   "dependencies": {
     "@config-plugins/react-native-blob-util": "^14.0.1",
     "@config-plugins/react-native-pdf": "^14.0.1",
@@ -46,6 +47,7 @@
     "@types/react": "~19.2.2",
     "eslint": "^9.0.0",
     "eslint-config-expo": "~56.0.4",
+    "gh-pages": "^6.0.1",
     "typescript": "~6.0.3"
   },
   "scripts": {
@@ -54,7 +56,9 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "lint": "expo lint"
+    "lint": "expo lint",
+    "predeploy": "expo export --platform web --output-dir dist",
+    "deploy": "gh-pages -d dist -m \"Deploy website\""
   },
   "private": true
 }
