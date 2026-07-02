@@ -57,7 +57,7 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "lint": "expo lint",
-    "predeploy": "expo export --platform web --output-dir dist",
+    "predeploy": "expo export --platform web --output-dir dist --clear",
     "deploy": "gh-pages -d dist -m \"Deploy website\""
   },
   "private": true

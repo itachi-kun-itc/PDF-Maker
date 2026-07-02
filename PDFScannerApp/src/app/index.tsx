@@ -1343,12 +1343,12 @@ export default function HomeScreen() {
                   onPress={() => setCameraModeVisible(true)}
                 >
                   {/*
-                  <Text style={styles.buttonText}>Scan</Text>
+                  <Text style={styles.buttonText}>スキャン開始</Text>
                   */}
                   {/*
                   <Text style={styles.buttonText}>スキャン開始</Text>
                   */}
-                  <Text style={styles.buttonText}>Scan</Text>
+                  <Text style={styles.buttonText}>スキャン開始</Text>
                 </Pressable>
 
                 <Pressable
@@ -1366,7 +1366,7 @@ export default function HomeScreen() {
                     {/*
                     {isCreatingPdf ? 'PDF邨仙粋荳ｭ...' : '邨仙粋PDF繧剃ｽ懈・'}
                     */}
-                    {isCreatingPdf ? 'Building PDF...' : 'Save PDF'}
+                    {isCreatingPdf ? 'PDFを結合中...' : 'PDFを結合'}
                   </Text>
                 </Pressable>
               </View>
