@@ -70,6 +70,7 @@ const PDF_HISTORY_WEB_DB_NAME = 'pdfscanner.history.db';
 const PDF_HISTORY_WEB_STORE_NAME = 'pdfHistory';
 const PDF_HISTORY_WEB_RECORD_KEY = 'items';
 const PDF_HISTORY_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const CAMERA_PERMISSION_STORAGE_KEY = 'pdfscanner.cameraPermissionAsked.v1';
 const PDFJS_SCRIPT_ID = 'pdfjs-preview-renderer';
 const PDFJS_VERSION = '3.11.174';
 const A4_PORTRAIT_WIDTH = 595.28;
@@ -633,6 +634,63 @@ export default function HomeScreen() {
     };
 
     void clearOldWebCaches(); */
+  }, []);
+
+  useEffect(() => {
+    const checkLatestHtmlOnce = async () => {
+      if (Platform.OS !== 'web' || typeof window === 'undefined') {
+        return;
+      }
+
+      const sessionKey = 'pdfscanner.webHtmlCheckedThisSession.v1';
+      const versionKey = 'pdfscanner.webHtmlVersion.v1';
+      const reloadKey = 'pdfscanner.webHtmlReloadedForUpdate.v1';
+
+      if (sessionStorage.getItem(sessionKey) === 'true') {
+        return;
+      }
+
+      sessionStorage.setItem(sessionKey, 'true');
+
+      try {
+        const response = await fetch(window.location.href, {
+          cache: 'no-store',
+          headers: {
+            Accept: 'text/html',
+          },
+        });
+        if (!response.ok) {
+          return;
+        }
+
+        const nextVersion =
+          response.headers.get('etag') ??
+          response.headers.get('last-modified') ??
+          response.headers.get('date');
+        if (!nextVersion) {
+          return;
+        }
+
+        const previousVersion = localStorage.getItem(versionKey);
+        localStorage.setItem(versionKey, nextVersion);
+
+        if (previousVersion && previousVersion !== nextVersion) {
+          if (sessionStorage.getItem(reloadKey) === 'true') {
+            return;
+          }
+
+          sessionStorage.setItem(reloadKey, 'true');
+          window.location.reload();
+          return;
+        }
+
+        sessionStorage.removeItem(reloadKey);
+      } catch (error) {
+        console.warn('[Web] failed to check latest HTML', error);
+      }
+    };
+
+    void checkLatestHtmlOnce();
   }, []);
 
   useEffect(() => {
@@ -1272,7 +1330,50 @@ export default function HomeScreen() {
       {header}
 
       {activeTab === 'scan' ? (
-        <DraggableFlatList
+        <>
+          {Platform.OS === 'web' ? (
+            <View style={styles.scanActions}>
+              <View style={styles.buttonRow}>
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.button,
+                    styles.scanButton,
+                    pressed && styles.buttonPressed,
+                  ]}
+                  onPress={() => setCameraModeVisible(true)}
+                >
+                  {/*
+                  <Text style={styles.buttonText}>Scan</Text>
+                  */}
+                  {/*
+                  <Text style={styles.buttonText}>スキャン開始</Text>
+                  */}
+                  <Text style={styles.buttonText}>Scan</Text>
+                </Pressable>
+
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.button,
+                    styles.pdfButton,
+                    pressed && styles.buttonPressed,
+                  ]}
+                  onPress={() => {
+                    void createAndSavePdf();
+                  }}
+                  disabled={isCreatingPdf || isSavingPdf}
+                >
+                  <Text style={styles.buttonText}>
+                    {/*
+                    {isCreatingPdf ? 'PDF邨仙粋荳ｭ...' : '邨仙粋PDF繧剃ｽ懈・'}
+                    */}
+                    {isCreatingPdf ? 'Building PDF...' : 'Save PDF'}
+                  </Text>
+                </Pressable>
+              </View>
+            </View>
+          ) : null}
+
+          <DraggableFlatList
           data={pages}
           keyExtractor={(item) => item.id}
           renderItem={renderPage}
@@ -1301,7 +1402,7 @@ export default function HomeScreen() {
           showsVerticalScrollIndicator
           ListHeaderComponent={
             <View style={styles.header}>
-              <View style={styles.buttonRow}>
+              {Platform.OS !== 'web' ? <View style={styles.buttonRow}>
                 <Pressable
                   style={({ pressed }) => [
                     styles.button,
@@ -1328,7 +1429,7 @@ export default function HomeScreen() {
                     {isCreatingPdf ? 'PDF結合中...' : '結合PDFを作成'}
                   </Text>
                 </Pressable>
-              </View>
+              </View> : null}
 
               <Text style={styles.sectionTitle}>追加済みファイル ({pages.length})</Text>
 
@@ -1339,7 +1440,8 @@ export default function HomeScreen() {
               ) : null}
             </View>
           }
-        />
+          />
+        </>
       ) : (
         <ScrollView
           style={styles.list}
@@ -1582,6 +1684,12 @@ const styles = StyleSheet.create({
   },
   header: {
     marginBottom: 12,
+  },
+  scanActions: {
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 8,
+    backgroundColor: '#06152A',
   },
   buttonRow: {
     flexDirection: 'row',
