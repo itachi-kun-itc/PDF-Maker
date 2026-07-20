@@ -34,15 +34,14 @@ Node.js 22以降とnpmを用意します。
 
 ```bash
 git clone https://github.com/itachi-kun-itc/PDF-Maker.git
-cd PDF-Maker/PDFMaker
-npm ci
-npm run dev
+cd PDF-Maker
+npm --prefix PDFMaker ci
+npm run web
 ```
 
 ## 品質チェック
 
 ```bash
-cd PDFMaker
 npm run lint
 npm run build
 ```

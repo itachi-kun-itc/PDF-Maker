@@ -1,0 +1,11 @@
+{
+  "name": "pdf-maker-workspace",
+  "private": true,
+  "scripts": {
+    "web": "npm --prefix PDFMaker run web",
+    "dev": "npm --prefix PDFMaker run dev",
+    "build": "npm --prefix PDFMaker run build",
+    "lint": "npm --prefix PDFMaker run lint",
+    "preview": "npm --prefix PDFMaker run preview"
+  }
+}
