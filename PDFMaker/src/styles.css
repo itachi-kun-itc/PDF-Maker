@@ -7,6 +7,13 @@
 }
 
 * { box-sizing: border-box; user-select: none; -webkit-user-select: none; }
+* { scrollbar-width: none; }
+*:focus, *:focus-within { scrollbar-width: thin; scrollbar-color: #516b8d transparent; }
+*::-webkit-scrollbar { width: 0; height: 0; }
+*:focus::-webkit-scrollbar, *:focus-within::-webkit-scrollbar { width: 4px; height: 4px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { border-radius: 999px; background: #516b8d; }
+*::-webkit-scrollbar-thumb:hover { background: #6f8fb8; }
 html { min-width: 320px; background: #071426; touch-action: pan-x pan-y; }
 body { margin: 0; min-width: 320px; min-height: 100vh; touch-action: pan-x pan-y; }
 button, input { font: inherit; }
@@ -21,13 +28,7 @@ button:disabled { cursor: not-allowed; opacity: .45; }
     #071426;
 }
 
-.site-header, main, footer { width: min(1120px, calc(100% - 40px)); margin-inline: auto; }
-.site-header { min-height: 92px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #1d314c; }
-.brand { display: flex; align-items: center; gap: 14px; }
-.brand-mark { display: grid; place-items: center; width: 48px; height: 56px; border-radius: 8px 8px 12px 8px; background: linear-gradient(145deg, #ff5364, #b82140); color: white; font-size: 12px; font-weight: 900; letter-spacing: .08em; box-shadow: 0 12px 30px rgba(203, 41, 72, .25); }
-.brand h1 { margin: 0; font-size: clamp(18px, 5vw, 20px); letter-spacing: -.02em; white-space: nowrap; }
-.brand p { margin: 3px 0 0; color: #8294ae; font-size: clamp(10px, 3vw, 12px); white-space: nowrap; }
-.github-link { flex-shrink: 0; color: #dbe8ff; text-decoration: none; border: 1px solid #304768; border-radius: 999px; padding: 9px 16px; font-size: clamp(11px, 3.2vw, 13px); font-weight: 700; white-space: nowrap; }
+main, footer { width: min(1120px, calc(100% - 40px)); margin-inline: auto; }
 
 .eyebrow { margin: 0 0 12px; color: #5fa4ff; font-size: 11px; font-weight: 900; letter-spacing: .18em; }
 
@@ -100,13 +101,10 @@ footer { display: flex; justify-content: space-between; gap: 20px; padding: 28px
 .dialog-actions > button:not(.primary-button) { border: 1px solid #2d4868; border-radius: 10px; background: transparent; color: #b4c6dc; padding: 12px 18px; }
 .preview-modal iframe, .preview-modal img { width: min(1000px, 94vw); height: 88vh; border: 0; border-radius: 12px; object-fit: contain; background: white; }
 .preview-close { position: fixed; top: 18px; right: 18px; z-index: 1; width: 44px; height: 44px; border: 1px solid #55708d; border-radius: 50%; background: #10243d; color: white; font-size: 28px; }
+.landscape-blocker { display: none; }
 
 @media (max-width: 760px) {
-  .site-header, main, footer { width: min(100% - 24px, 1120px); }
-  .site-header { min-height: 76px; }
-  .brand { gap: 9px; min-width: 0; }
-  .brand-mark { width: 42px; height: 50px; font-size: 11px; }
-  .github-link { padding: 8px 11px; }
+  main, footer { width: min(100% - 24px, 1120px); }
   .tabs { gap: 6px; }
   .tabs button { padding: 9px 12px; }
   .tabs span { min-width: 19px; height: 19px; margin-left: 4px; }
@@ -125,12 +123,52 @@ footer { display: flex; justify-content: space-between; gap: 20px; padding: 28px
 }
 
 @media (max-width: 380px) {
-  .site-header, main, footer { width: min(100% - 16px, 1120px); }
-  .brand-mark { width: 38px; height: 46px; }
-  .brand h1 { font-size: 17px; }
-  .brand p { font-size: 9px; }
-  .github-link { padding: 7px 9px; font-size: 10px; }
+  main, footer { width: min(100% - 16px, 1120px); }
   .tabs button { padding-inline: 9px; font-size: 11px; }
   .section-heading h3 { font-size: 18px; }
   .section-heading > span { font-size: 9px; }
+}
+
+@media (orientation: landscape) and (max-height: 600px) and (max-width: 1000px) {
+  .landscape-blocker {
+    position: fixed;
+    inset: 0;
+    z-index: 10000;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 24px;
+    background:
+      radial-gradient(circle at 50% 0%, rgba(54, 133, 255, .24), transparent 60%),
+      #071426;
+    color: #eef4ff;
+    text-align: center;
+  }
+
+  .landscape-blocker strong {
+    font-size: clamp(18px, 4vw, 26px);
+    white-space: nowrap;
+  }
+
+  .landscape-blocker span {
+    color: #9fb2cc;
+    font-size: clamp(11px, 2.4vw, 14px);
+    white-space: nowrap;
+  }
+
+  .rotate-device-icon {
+    display: grid;
+    place-items: center;
+    width: 56px;
+    height: 56px;
+    margin-bottom: 4px;
+    border: 1px solid #365d88;
+    border-radius: 16px;
+    background: #102d4e;
+    color: #68a9ff;
+    font-size: 34px;
+    font-weight: 800;
+  }
 }

@@ -490,19 +490,6 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <header className="site-header">
-        <div className="brand">
-          <div className="brand-mark" aria-hidden="true">PDF</div>
-          <div>
-            <h1>PDF Maker</h1>
-            <p>画像とPDFを、ひとつに。</p>
-          </div>
-        </div>
-        <a className="github-link" href="https://github.com/itachi-kun-itc/PDF-Maker" target="_blank" rel="noreferrer">
-          GitHub
-        </a>
-      </header>
-
       <main>
         <nav className="tabs" aria-label="画面切り替え">
           <button className={activeTab === 'create' ? 'active' : ''} onClick={() => setActiveTab('create')}>
@@ -637,6 +624,12 @@ export default function App() {
         <span>PDF Maker · Web only</span>
         <span>ファイル処理はブラウザ内で実行されます</span>
       </footer>
+
+      <div className="landscape-blocker" role="alert" aria-live="assertive">
+        <div className="rotate-device-icon" aria-hidden="true">↻</div>
+        <strong>横画面には対応していません</strong>
+        <span>端末を縦向きにしてご利用ください</span>
+      </div>
 
       {pendingPdf ? (
         <div className="modal-backdrop" role="presentation">
