@@ -1,11 +1,12 @@
 {
   "expo": {
-    "name": "PDFスキャン-結合",
-    "slug": "PDFScannerApp",
+    "name": "PDF Maker",
+    "description": "写真・画像・PDFを取り込み、ページ順を並べ替えて、1つのPDFに結合・保存・共有できるアプリです。",
+    "slug": "pdf-maker",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "pdfscannerapp",
+    "scheme": "pdfmaker",
     "userInterfaceStyle": "automatic",
     "ios": {
       "icon": "./assets/images/icon.png"
@@ -26,8 +27,10 @@
       "display": "standalone",
       "themeColor": "#06152A",
       "backgroundColor": "#06152A",
-      "name": "PDFスキャン-結合",
-      "shortName": "PDFスキャン",
+      "name": "PDF Maker",
+      "shortName": "PDF Maker",
+      "description": "写真・画像・PDFを取り込み、ページ順を並べ替えて、1つのPDFに結合・保存・共有できるアプリです。",
+      "lang": "ja",
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
@@ -59,7 +62,7 @@
       ]
     ],
     "experiments": {
-      "baseUrl": "/pdf_itc/",
+      "baseUrl": "/PDF-Maker/",
       "typedRoutes": true,
       "reactCompiler": true
     },

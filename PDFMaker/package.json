@@ -1,8 +1,13 @@
 {
-  "name": "pdfscannerapp",
+  "name": "pdf-maker",
+  "description": "写真・画像・PDFを取り込み、並べ替えて、1つのPDFに結合・保存・共有できるアプリ",
   "main": "expo-router/entry",
   "version": "1.0.0",
-  "homepage": "https://itachi-kun-itc.github.io/pdf_itc/",
+  "homepage": "https://itachi-kun-itc.github.io/PDF-Maker/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/itachi-kun-itc/PDF-Maker.git"
+  },
   "dependencies": {
     "@config-plugins/react-native-blob-util": "^14.0.1",
     "@config-plugins/react-native-pdf": "^14.0.1",
