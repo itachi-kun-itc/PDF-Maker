@@ -32,7 +32,7 @@ main, footer { width: min(1120px, calc(100% - 40px)); margin-inline: auto; }
 
 .eyebrow { margin: 0 0 12px; color: #5fa4ff; font-size: 11px; font-weight: 900; letter-spacing: .18em; }
 
-.tabs { display: flex; gap: 8px; margin: 28px 0 18px; }
+.tabs { display: flex; gap: 8px; margin: 0 0 18px; padding-top: 28px; }
 .tabs button { border: 1px solid #253b59; border-radius: 999px; background: #0c1d32; color: #8fa2bc; padding: 11px 18px; font-size: clamp(12px, 3.6vw, 14px); font-weight: 800; white-space: nowrap; }
 .tabs button.active { border-color: #3f8cff; background: #173b6b; color: white; }
 .tabs span { display: inline-grid; place-items: center; min-width: 22px; height: 22px; margin-left: 7px; border-radius: 999px; background: rgba(255,255,255,.1); font-size: 11px; }
