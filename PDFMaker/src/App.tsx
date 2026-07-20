@@ -302,6 +302,33 @@ export default function App() {
     })();
   }, []);
 
+  useEffect(() => {
+    const preventWheelZoom = (event: WheelEvent) => {
+      if (event.ctrlKey || event.metaKey) event.preventDefault();
+    };
+    const preventKeyboardZoom = (event: KeyboardEvent) => {
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        ['+', '-', '=', '0'].includes(event.key)
+      ) {
+        event.preventDefault();
+      }
+    };
+    const preventGestureZoom = (event: Event) => event.preventDefault();
+
+    window.addEventListener('wheel', preventWheelZoom, { passive: false });
+    window.addEventListener('keydown', preventKeyboardZoom);
+    document.addEventListener('gesturestart', preventGestureZoom, { passive: false });
+    document.addEventListener('gesturechange', preventGestureZoom, { passive: false });
+
+    return () => {
+      window.removeEventListener('wheel', preventWheelZoom);
+      window.removeEventListener('keydown', preventKeyboardZoom);
+      document.removeEventListener('gesturestart', preventGestureZoom);
+      document.removeEventListener('gesturechange', preventGestureZoom);
+    };
+  }, []);
+
   const addFiles = async (files: File[]) => {
     const supported = files.filter((file) =>
       /\.(jpe?g|png|pdf)$/i.test(file.name) || /^(image\/(jpe?g|png)|application\/pdf)$/i.test(file.type),
@@ -477,12 +504,6 @@ export default function App() {
       </header>
 
       <main>
-        <section className="hero">
-          <span className="eyebrow">BROWSER-BASED PDF TOOL</span>
-          <h2>スキャンから結合まで、<br />ブラウザだけで完結。</h2>
-          <p>写真、画像、既存PDFを追加して並べ替えるだけ。サーバーへのアップロードなしでPDFを作成します。</p>
-        </section>
-
         <nav className="tabs" aria-label="画面切り替え">
           <button className={activeTab === 'create' ? 'active' : ''} onClick={() => setActiveTab('create')}>
             PDFを作る <span>{pages.length}</span>
