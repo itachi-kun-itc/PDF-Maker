@@ -6,7 +6,7 @@ import {
     createDocumentScanner,
     DocumentCorners,
     DocumentPoint,
-} from '@/utils/document-scanner';
+} from '../utils/document-scanner.web';
 
 type WebDocumentScannerProps = {
   visible: boolean;

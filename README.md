@@ -1,43 +1,42 @@
 # PDF Maker
 
-写真・画像・既存のPDFを取り込み、ページを好きな順番に並べ替えて、1つのPDFとして保存・共有できるクロスプラットフォームアプリです。
+写真・画像・既存のPDFをブラウザ内で取り込み、ページを並べ替えて、1つのPDFとして保存・共有できるWebアプリです。
+
+## Webアプリ
+
+https://itachi-kun-itc.github.io/PDF-Maker/
 
 ## 主な機能
 
-- カメラで書類をスキャン、または写真として撮影
-- 写真ライブラリや端末からJPEG・PNG・PDFを追加
-- ドラッグ＆ドロップでページ順を並べ替え
-- 複数の画像・PDFを1つのPDFに結合
-- 作成したPDFのプレビュー、保存、共有
-- 作成履歴を端末内に30日間保存
-- iOS・Android・Webに対応
+- ブラウザのカメラで書類をスキャン
+- スマートフォンのカメラで撮影
+- JPEG・PNG・PDFを複数追加
+- ドラッグ＆ドロップまたはボタンで順番を変更
+- 画像と既存PDFを1つのPDFへ結合
+- 作成したPDFのプレビュー、ダウンロード、共有
+- 作成履歴をブラウザ内に30日間保存
+- スマートフォン・タブレット・PCのブラウザに対応
 
-## Web版
+ファイルの読み込みとPDF生成はブラウザ内で行われます。
 
-GitHub Pages: https://itachi-kun-itc.github.io/PDF-Maker/
+## 技術構成
 
-## 開発環境
-
-- [Expo](https://expo.dev/) 56
-- React Native / React Native Web
+- React
 - TypeScript
-- Expo Router
-- pdf-lib / jsPDF
+- Vite
+- pdf-lib
+- IndexedDB
+- GitHub Pages
 
 ## セットアップ
 
-Node.js 20以降とnpmを用意し、次のコマンドを実行します。
+Node.js 22以降とnpmを用意します。
 
 ```bash
-cd PDFMaker
+git clone https://github.com/itachi-kun-itc/PDF-Maker.git
+cd PDF-Maker/PDFMaker
 npm ci
-npm start
-```
-
-起動後、ターミナルの案内からiOS、Android、またはWebを選択できます。Web版のみを起動する場合は次を実行してください。
-
-```bash
-npm run web
+npm run dev
 ```
 
 ## 品質チェック
@@ -45,36 +44,45 @@ npm run web
 ```bash
 cd PDFMaker
 npm run lint
-npx tsc --noEmit
+npm run build
 ```
 
 ## デプロイ
 
-`main` ブランチへのpushでGitHub ActionsがWeb版をビルドし、`gh-pages` ブランチへ公開します。手元で静的ファイルを生成する場合は次を実行します。
+`main`ブランチへpushすると、GitHub ActionsがViteの静的サイトをビルドし、GitHub Pagesへ直接デプロイします。
 
-```bash
-cd PDFMaker
-npm run predeploy
-```
+GitHub Pages用の公開ベースパスは`/PDF-Maker/`です。
 
 ## ディレクトリ構成
 
 ```text
 .
-├─ .github/workflows/   # GitHub Pagesへの自動デプロイ
+├─ .github/workflows/deploy-pages.yml
 ├─ PDFMaker/
-│  ├─ assets/           # アイコン・画像
-│  ├─ src/app/          # 画面とルーティング
-│  ├─ src/components/   # UIコンポーネント
-│  └─ app.json          # Expo設定
+│  ├─ public/
+│  ├─ src/
+│  │  ├─ components/WebDocumentScanner.tsx
+│  │  ├─ utils/document-scanner.web.ts
+│  │  ├─ App.tsx
+│  │  ├─ main.tsx
+│  │  └─ styles.css
+│  ├─ index.html
+│  ├─ package.json
+│  └─ vite.config.ts
 └─ README.md
 ```
 
 ## 注意事項
 
-- 作成履歴は端末またはブラウザ内に保存され、30日後に自動削除されます。
-- カメラ・写真ライブラリ・共有機能の挙動はプラットフォームによって異なります。
-- Web版のPDFプレビューではPDF.jsをCDNから読み込みます。
+- 作成履歴はブラウザのIndexedDBへ保存され、30日後に自動削除されます。
+- ブラウザのサイトデータを削除すると履歴も削除されます。
+- 暗号化またはパスワード保護されたPDFは処理できない場合があります。
+- Web書類スキャンとPDFプレビューでは外部CDNからライブラリを読み込みます。
+- 重要なPDFは作成後にダウンロードしてください。
+
+## Wiki
+
+https://github.com/itachi-kun-itc/PDF-Maker/wiki
 
 ## ライセンス
 

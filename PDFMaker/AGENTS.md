@@ -1,3 +1,5 @@
-# Expo HAS CHANGED
+# PDF Maker Web App
 
-Read the exact versioned docs at https://docs.expo.dev/versions/v56.0.0/ before writing any code.
+This project is a browser-only React and TypeScript application built with Vite and deployed to GitHub Pages.
+
+Before completing changes, run `npm run lint` and `npm run build`.

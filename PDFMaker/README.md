@@ -1,3 +1,5 @@
-# PDF Maker app
+# PDF Maker Web App
 
-アプリの概要、セットアップ方法、デプロイ手順はリポジトリ直下の [README](../README.md) を参照してください。
+Vite＋Reactで構築したWeb専用のPDF作成アプリです。
+
+概要、セットアップ、デプロイ方法は[リポジトリ直下のREADME](../README.md)を参照してください。
